@@ -48,6 +48,16 @@ func TestArtifactCreateHappyPathPrintsShareURL(t *testing.T) {
 	if body.Visibility != "" || body.ExpiresAt != "" {
 		t.Fatalf("optional fields were not omitted: %#v", body)
 	}
+	var rawBody map[string]any
+	if err := json.Unmarshal(server.lastRawBody(t), &rawBody); err != nil {
+		t.Fatalf("decode raw request body: %v", err)
+	}
+	if _, ok := rawBody["visibility"]; ok {
+		t.Fatalf("raw request body contained visibility key: %#v", rawBody)
+	}
+	if _, ok := rawBody["expires_at"]; ok {
+		t.Fatalf("raw request body contained expires_at key: %#v", rawBody)
+	}
 	if got := server.lastAuthorization(t); got != "Bearer "+testToken {
 		t.Fatalf("Authorization = %q, want bearer token", got)
 	}
@@ -169,7 +179,7 @@ func TestArtifactCreateExpiresDuration(t *testing.T) {
 }
 
 func TestArtifactCreateRejectsInvalidExpiresBeforeRequest(t *testing.T) {
-	for _, expires := range []string{"garbage", "-1h"} {
+	for _, expires := range []string{"garbage", "-1h", "0h", "0d"} {
 		t.Run(expires, func(t *testing.T) {
 			setTestConfigHome(t)
 			filePath := writeArtifactFile(t, "artifact.html", "<html></html>")
@@ -238,6 +248,28 @@ func TestArtifactCreateRequiresLoginBeforeRequest(t *testing.T) {
 	assertNoTokenLeak(t, stdout, stderr)
 }
 
+func TestArtifactCreateDifferentServerDoesNotSendToken(t *testing.T) {
+	setTestConfigHome(t)
+	filePath := writeArtifactFile(t, "artifact.html", "<html></html>")
+	serverA := newArtifactTestServer(t, artifactServerOptions{StatusCode: http.StatusCreated})
+	defer serverA.Close()
+	serverB := newArtifactTestServer(t, artifactServerOptions{StatusCode: http.StatusCreated})
+	defer serverB.Close()
+	saveTestCreds(t, serverA.URL)
+
+	stdout, stderr, err := executeCLI(t, []string{"--server", serverB.URL, "artifact", "create", "--file", filePath}, nil)
+	if err == nil {
+		t.Fatal("artifact create succeeded for a different server")
+	}
+	if !strings.Contains(stderr, "not logged in to") {
+		t.Fatalf("stderr = %q, want not logged in to", stderr)
+	}
+	if got := serverB.requestCount.Load(); got != 0 {
+		t.Fatalf("server B received %d requests, want 0", got)
+	}
+	assertNoTokenLeak(t, stdout, stderr)
+}
+
 func TestArtifactCreateXHTMLInference(t *testing.T) {
 	setTestConfigHome(t)
 	filePath := writeArtifactFile(t, "artifact.xhtml", "<html></html>")
@@ -282,6 +314,7 @@ type artifactTestServer struct {
 	requestCount  atomic.Int64
 	mu            sync.Mutex
 	body          artifactRequestBody
+	rawBody       []byte
 	authorization string
 }
 
@@ -324,6 +357,7 @@ func newArtifactTestServer(t *testing.T, opts artifactServerOptions) *artifactTe
 
 		fake.mu.Lock()
 		fake.body = requestBody
+		fake.rawBody = append(fake.rawBody[:0], body...)
 		fake.authorization = r.Header.Get("Authorization")
 		fake.mu.Unlock()
 
@@ -357,6 +391,15 @@ func (s *artifactTestServer) lastAuthorization(t *testing.T) string {
 	defer s.mu.Unlock()
 
 	return s.authorization
+}
+
+func (s *artifactTestServer) lastRawBody(t *testing.T) []byte {
+	t.Helper()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]byte(nil), s.rawBody...)
 }
 
 func writeArtifactFile(t *testing.T, name, content string) string {
