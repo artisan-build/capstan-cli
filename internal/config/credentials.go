@@ -17,6 +17,16 @@ type Credentials struct {
 	Server string `json:"server"`
 }
 
+// String redacts the token if credentials are formatted accidentally.
+func (c Credentials) String() string {
+	return fmt.Sprintf(`{Token:%q Server:%q}`, "[REDACTED]", c.Server)
+}
+
+// GoString redacts the token for %#v formatting.
+func (c Credentials) GoString() string {
+	return fmt.Sprintf(`config.Credentials{Token:%q, Server:%q}`, "[REDACTED]", c.Server)
+}
+
 // Path returns the credentials file path for the current environment.
 func Path() (string, error) {
 	configHome := os.Getenv("XDG_CONFIG_HOME")

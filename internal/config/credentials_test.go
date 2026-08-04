@@ -2,8 +2,10 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -106,6 +108,20 @@ func TestLoadMissingFileReturnsErrNotLoggedIn(t *testing.T) {
 	_, err := Load()
 	if !errors.Is(err, ErrNotLoggedIn) {
 		t.Fatalf("Load error = %v, want ErrNotLoggedIn", err)
+	}
+}
+
+func TestCredentialsFormattingRedactsToken(t *testing.T) {
+	creds := Credentials{Token: "test-token-123", Server: "https://capstan.test"}
+
+	for _, formatted := range []string{fmt.Sprintf("%v", creds), fmt.Sprintf("%#v", creds)} {
+		if strings.Contains(formatted, creds.Token) {
+			t.Fatalf("formatted credentials leaked token: %s", formatted)
+		}
+
+		if !strings.Contains(formatted, "[REDACTED]") {
+			t.Fatalf("formatted credentials did not contain redaction marker: %s", formatted)
+		}
 	}
 }
 

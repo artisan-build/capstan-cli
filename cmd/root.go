@@ -12,9 +12,10 @@ var Version = "dev"
 
 func newRootCommand() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:          "capstan",
-		Short:        "Command-line client for the Capstan ecosystem server",
-		SilenceUsage: true,
+		Use:           "capstan",
+		Short:         "Command-line client for the Capstan ecosystem server",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
