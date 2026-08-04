@@ -27,6 +27,7 @@ func newRootCommand() *cobra.Command {
 	}
 	rootCmd.PersistentFlags().StringVar(&server, "server", "", "Capstan server base URL")
 
+	rootCmd.AddCommand(newArtifactCommand(&server))
 	rootCmd.AddCommand(newLoginCommand(&server))
 	rootCmd.AddCommand(newLogoutCommand())
 	rootCmd.AddCommand(newVersionCommand())
