@@ -18,9 +18,8 @@ authorize + RFC-8628 device flow + `ResolveApiActor` + `GET /api/v1/me`) and PR5
 ## Phase & mode
 - phase: pre-launch
 - default mode: A-autonomous (merge each PR on green CI; the loop's own review+judge are the review)
-- merge method: `gh pr merge --squash --auto`
-- **exception:** the repo has a resident coordinator during a build → implementers OPEN a PR and hand
-  off to the brain orchestrator; the orchestrator reviews + merges (never auto-merge under a resident agent).
+- merge method: `gh pr merge --squash --auto` — the coordinator merges each PR on green CI (standard
+  Mode A). No stray resident agent in this fresh repo, so no hand-off dance.
 
 ## Hard gate (green before review; coordinator verifies on the committed SHA, clean tree)
 - command: `go build ./... && go vet ./... && go test ./...` and `golangci-lint run`
