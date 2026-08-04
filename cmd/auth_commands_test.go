@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/artisan-build/capstan-cli/internal/config"
@@ -207,6 +208,36 @@ func TestWhoamiUnauthorizedSuggestsLogin(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "capstan login") {
 		t.Fatalf("stderr = %q, want login suggestion", stderr)
+	}
+	assertNoTokenLeak(t, stdout, stderr)
+}
+
+func TestWhoamiDifferentServerDoesNotSendToken(t *testing.T) {
+	setTestConfigHome(t)
+
+	serverA := newWhoamiTestServer(t, http.StatusOK)
+	defer serverA.Close()
+
+	var requestsToB atomic.Int64
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestsToB.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer serverB.Close()
+
+	if err := config.Save(config.Credentials{Token: testToken, Server: serverA.URL}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	stdout, stderr, err := executeCLI(t, []string{"--server", serverB.URL, "whoami"}, nil)
+	if err == nil {
+		t.Fatal("whoami succeeded for a different server")
+	}
+	if !strings.Contains(stderr, "capstan login --server") {
+		t.Fatalf("stderr = %q, want login guidance", stderr)
+	}
+	if got := requestsToB.Load(); got != 0 {
+		t.Fatalf("server B received %d requests, want 0", got)
 	}
 	assertNoTokenLeak(t, stdout, stderr)
 }

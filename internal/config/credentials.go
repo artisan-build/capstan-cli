@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,23 +40,43 @@ func CleanServer(server string) string {
 // ResolveServer returns the server URL using flag > env > stored credentials > default precedence.
 func ResolveServer(flagServer string) (string, error) {
 	if server := CleanServer(flagServer); server != "" {
-		return server, nil
+		return validateServer(server)
 	}
 
 	if server := CleanServer(os.Getenv("CAPSTAN_SERVER")); server != "" {
-		return server, nil
+		return validateServer(server)
 	}
 
 	creds, err := Load()
 	if err == nil {
 		if server := CleanServer(creds.Server); server != "" {
-			return server, nil
+			return validateServer(server)
 		}
 	} else if !errors.Is(err, ErrNotLoggedIn) {
 		return "", err
 	}
 
-	return DefaultServer, nil
+	return validateServer(DefaultServer)
+}
+
+func validateServer(server string) (string, error) {
+	parsed, err := url.Parse(server)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid server URL %q", server)
+	}
+
+	if parsed.Scheme == "https" {
+		return server, nil
+	}
+
+	if parsed.Scheme == "http" {
+		host := parsed.Hostname()
+		if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+			return server, nil
+		}
+	}
+
+	return "", fmt.Errorf("invalid server URL %q: use https unless targeting localhost", server)
 }
 
 // Path returns the credentials file path for the current environment.

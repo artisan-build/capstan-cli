@@ -43,6 +43,9 @@ func runWhoami(cmd *cobra.Command, serverFlag string, jsonOutput bool) error {
 	if err != nil {
 		return err
 	}
+	if server != config.CleanServer(creds.Server) {
+		return fmt.Errorf("not logged in to %s; run capstan login --server %s", server, server)
+	}
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
 	defer cancel()
