@@ -1,0 +1,14 @@
+# Binaries
+/capstan
+/dist/
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+coverage.txt
+
+# Local
+.env
+.DS_Store
