@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,18 +22,32 @@ import (
 
 const testToken = "test-token-123"
 const testDeviceCode = "test-device-code-123"
+const testAuthCode = "test-auth-code-123"
 
 func TestLoginSuccessfulFlowStoresCredentials(t *testing.T) {
 	setTestConfigHome(t)
 
-	server := newAuthTestServer(t, http.StatusOK)
+	server, recorder := newAuthTestServer(t, authServerOptions{})
 	defer server.Close()
 
-	stdout, stderr, err := executeCLI(t, []string{"--server", server.URL, "login", "--label", "test-host"}, openerGET(t))
+	stdout, stderr, err := executeCLI(t, []string{"--server", server.URL, "login", "--label", "test-host"}, func(authorizeURL string) error {
+		recorder.recordURL(authorizeURL)
+
+		return openerGET(t)(authorizeURL)
+	})
 	if err != nil {
 		t.Fatalf("login returned error: %v", err)
 	}
 	assertNoTokenLeak(t, stdout, stderr)
+
+	if got := recorder.exchangeCalls.Load(); got != 1 {
+		t.Fatalf("exchange endpoint called %d times, want 1", got)
+	}
+	for _, handled := range recorder.handledURLs() {
+		if strings.Contains(handled, testToken) {
+			t.Fatalf("URL leaked token: %q", handled)
+		}
+	}
 
 	creds, err := config.Load()
 	if err != nil {
@@ -61,22 +76,18 @@ func TestLoginSuccessfulFlowStoresCredentials(t *testing.T) {
 func TestLoginStateMismatchFailsWithoutCredentials(t *testing.T) {
 	setTestConfigHome(t)
 
-	stdout, stderr, err := executeCLI(t, []string{"--server", "https://server.example.test", "login"}, func(authorizeURL string) error {
-		parsed, err := url.Parse(authorizeURL)
-		if err != nil {
-			return err
-		}
+	server, recorder := newAuthTestServer(t, authServerOptions{AuthorizeState: "wrong-state"})
+	defer server.Close()
 
-		redirectURL := parsed.Query().Get("redirect_uri") + "?token=" + url.QueryEscape(testToken) + "&state=wrong-state"
-		resp, err := http.Get(redirectURL)
-		if err != nil {
-			return err
-		}
-
-		return resp.Body.Close()
-	})
+	stdout, stderr, err := executeCLI(t, []string{"--server", server.URL, "login"}, openerGET(t))
 	if err == nil {
 		t.Fatal("login succeeded with state mismatch")
+	}
+	if !strings.Contains(stderr, "state mismatch") {
+		t.Fatalf("stderr = %q, want state mismatch message", stderr)
+	}
+	if got := recorder.exchangeCalls.Load(); got != 0 {
+		t.Fatalf("exchange endpoint called %d times after state mismatch, want 0", got)
 	}
 	assertNoTokenLeak(t, stdout, stderr)
 	assertNoCredentialsFile(t)
@@ -85,29 +96,48 @@ func TestLoginStateMismatchFailsWithoutCredentials(t *testing.T) {
 func TestLoginAccessDeniedFailsWithoutCredentials(t *testing.T) {
 	setTestConfigHome(t)
 
-	stdout, stderr, err := executeCLI(t, []string{"--server", "https://server.example.test", "login"}, func(authorizeURL string) error {
-		parsed, err := url.Parse(authorizeURL)
-		if err != nil {
-			return err
-		}
+	server, recorder := newAuthTestServer(t, authServerOptions{AuthorizeError: "access_denied"})
+	defer server.Close()
 
-		state := parsed.Query().Get("state")
-		redirectURL := parsed.Query().Get("redirect_uri") + "?error=access_denied&state=" + url.QueryEscape(state)
-		resp, err := http.Get(redirectURL)
-		if err != nil {
-			return err
-		}
-
-		return resp.Body.Close()
-	})
+	stdout, stderr, err := executeCLI(t, []string{"--server", server.URL, "login"}, openerGET(t))
 	if err == nil {
 		t.Fatal("login succeeded after access_denied callback")
 	}
 	if !strings.Contains(stderr, "access_denied") {
 		t.Fatalf("stderr = %q, want access_denied message", stderr)
 	}
+	if got := recorder.exchangeCalls.Load(); got != 0 {
+		t.Fatalf("exchange endpoint called %d times after access_denied, want 0", got)
+	}
 	assertNoTokenLeak(t, stdout, stderr)
 	assertNoCredentialsFile(t)
+}
+
+func TestLoginExchangeErrorsFailWithoutCredentials(t *testing.T) {
+	for errorCode, wantMessage := range map[string]string{
+		"expired_token": "expired",
+		"invalid_grant": "invalid",
+	} {
+		t.Run(errorCode, func(t *testing.T) {
+			setTestConfigHome(t)
+
+			server, recorder := newAuthTestServer(t, authServerOptions{TokenError: errorCode})
+			defer server.Close()
+
+			stdout, stderr, err := executeCLI(t, []string{"--server", server.URL, "login"}, openerGET(t))
+			if err == nil {
+				t.Fatalf("login succeeded after exchange returned %s", errorCode)
+			}
+			if !strings.Contains(stderr, wantMessage) {
+				t.Fatalf("stderr = %q, want message containing %q", stderr, wantMessage)
+			}
+			if got := recorder.exchangeCalls.Load(); got != 1 {
+				t.Fatalf("exchange endpoint called %d times, want 1", got)
+			}
+			assertNoTokenLeak(t, stdout, stderr)
+			assertNoCredentialsFile(t)
+		})
+	}
 }
 
 func TestLoginMeFailureFailsClosedWithoutCredentials(t *testing.T) {
@@ -115,7 +145,7 @@ func TestLoginMeFailureFailsClosedWithoutCredentials(t *testing.T) {
 		t.Run(fmt.Sprintf("status %d", statusCode), func(t *testing.T) {
 			setTestConfigHome(t)
 
-			server := newAuthTestServer(t, statusCode)
+			server, _ := newAuthTestServer(t, authServerOptions{MeStatus: statusCode})
 			defer server.Close()
 
 			stdout, stderr, err := executeCLI(t, []string{"--server", server.URL, "login"}, openerGET(t))
@@ -429,12 +459,48 @@ func executeCLIWithDeviceSleep(t *testing.T, args []string, sleep func(context.C
 	return executeCLI(t, args, nil)
 }
 
-func newAuthTestServer(t *testing.T, meStatus int) *httptest.Server {
+type authServerOptions struct {
+	AuthorizeError string
+	AuthorizeState string
+	TokenError     string
+	MeStatus       int
+}
+
+type authServerRecorder struct {
+	exchangeCalls atomic.Int64
+
+	mu   sync.Mutex
+	urls []string
+}
+
+func (r *authServerRecorder) recordURL(handled string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.urls = append(r.urls, handled)
+}
+
+func (r *authServerRecorder) handledURLs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]string(nil), r.urls...)
+}
+
+func newAuthTestServer(t *testing.T, opts authServerOptions) (*httptest.Server, *authServerRecorder) {
 	t.Helper()
+
+	if opts.MeStatus == 0 {
+		opts.MeStatus = http.StatusOK
+	}
+
+	recorder := &authServerRecorder{}
+	var issuedRedirectURI atomic.Value
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/cli/authorize":
+			recorder.recordURL(r.URL.String())
+
 			redirectURI := r.URL.Query().Get("redirect_uri")
 			state := r.URL.Query().Get("state")
 			if state == "" {
@@ -455,14 +521,60 @@ func newAuthTestServer(t *testing.T, meStatus int) *httptest.Server {
 				t.Fatalf("redirect_uri path = %q, want /callback", parsedRedirect.Path)
 			}
 
-			callback := redirectURI + "?token=" + url.QueryEscape(testToken) + "&state=" + url.QueryEscape(state)
+			issuedRedirectURI.Store(redirectURI)
+
+			callbackState := state
+			if opts.AuthorizeState != "" {
+				callbackState = opts.AuthorizeState
+			}
+
+			var callback string
+			if opts.AuthorizeError != "" {
+				callback = redirectURI + "?error=" + url.QueryEscape(opts.AuthorizeError) + "&state=" + url.QueryEscape(callbackState)
+			} else {
+				callback = redirectURI + "?code=" + url.QueryEscape(testAuthCode) + "&state=" + url.QueryEscape(callbackState)
+			}
+			recorder.recordURL(callback)
 			http.Redirect(w, r, callback, http.StatusFound)
+		case "/api/v1/cli/authorize/token":
+			recorder.recordURL(r.URL.String())
+			recorder.exchangeCalls.Add(1)
+
+			if r.Method != http.MethodPost {
+				t.Fatalf("exchange method = %s, want POST", r.Method)
+			}
+
+			var body struct {
+				Code        string `json:"code"`
+				RedirectURI string `json:"redirect_uri"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode exchange body: %v", err)
+			}
+			if body.Code != testAuthCode {
+				t.Fatal("exchange body did not include expected code")
+			}
+
+			expectedRedirect, _ := issuedRedirectURI.Load().(string)
+			if expectedRedirect == "" || body.RedirectURI != expectedRedirect {
+				t.Fatalf("exchange redirect_uri = %q, want %q", body.RedirectURI, expectedRedirect)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			if opts.TokenError != "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprintf(w, `{"error":%q}`, opts.TokenError)
+
+				return
+			}
+
+			_, _ = fmt.Fprintf(w, `{"token":%q}`, testToken)
 		case "/api/v1/me":
 			if r.Header.Get("Authorization") != "Bearer "+testToken {
 				t.Fatal("/me request missing expected authorization header")
 			}
-			w.WriteHeader(meStatus)
-			if meStatus == http.StatusOK {
+			w.WriteHeader(opts.MeStatus)
+			if opts.MeStatus == http.StatusOK {
 				_, _ = io.WriteString(w, `{"id":42,"name":"Ada Lovelace","email":"ada@example.test"}`)
 			}
 		default:
@@ -470,7 +582,7 @@ func newAuthTestServer(t *testing.T, meStatus int) *httptest.Server {
 		}
 	}))
 
-	return server
+	return server, recorder
 }
 
 func newWhoamiTestServer(t *testing.T, statusCode int) *httptest.Server {
