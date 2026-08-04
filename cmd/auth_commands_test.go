@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,11 +14,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/artisan-build/capstan-cli/internal/config"
 )
 
 const testToken = "test-token-123"
+const testDeviceCode = "test-device-code-123"
 
 func TestLoginSuccessfulFlowStoresCredentials(t *testing.T) {
 	setTestConfigHome(t)
@@ -139,6 +142,139 @@ func TestLoginTimeoutFailsCleanly(t *testing.T) {
 	}
 	assertNoTokenLeak(t, stdout, stderr)
 	assertNoCredentialsFile(t)
+}
+
+func TestDeviceLoginHappyPathStoresCredentials(t *testing.T) {
+	setTestConfigHome(t)
+
+	server := newDeviceTestServer(t, deviceServerOptions{
+		TokenErrors: []string{"authorization_pending", "authorization_pending"},
+		MeStatus:    http.StatusOK,
+	})
+	defer server.Close()
+
+	stdout, stderr, err := executeCLIWithDeviceSleep(t, []string{"--server", server.URL, "login", "--device", "--label", "test-host"}, recordSleeps(nil))
+	if err != nil {
+		t.Fatalf("login --device returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "USER-CODE") || !strings.Contains(stdout, "https://verify.example.test/complete") {
+		t.Fatalf("stdout = %q, want user code and verification URL", stdout)
+	}
+	assertNoSecretLeak(t, stdout, stderr)
+
+	creds, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if creds.Token != testToken {
+		t.Fatal("stored token did not match issued token")
+	}
+	if creds.Server != server.URL {
+		t.Fatalf("stored server = %q, want %q", creds.Server, server.URL)
+	}
+
+	path, err := config.Path()
+	if err != nil {
+		t.Fatalf("Path returned error: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat returned error: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("credentials file mode = %v, want 0600", got)
+	}
+}
+
+func TestDeviceLoginSlowDownIncreasesPollInterval(t *testing.T) {
+	setTestConfigHome(t)
+
+	server := newDeviceTestServer(t, deviceServerOptions{
+		TokenErrors: []string{"slow_down"},
+		MeStatus:    http.StatusOK,
+	})
+	defer server.Close()
+
+	var delays []time.Duration
+	_, _, err := executeCLIWithDeviceSleep(t, []string{"--server", server.URL, "login", "--device"}, recordSleeps(&delays))
+	if err != nil {
+		t.Fatalf("login --device returned error: %v", err)
+	}
+	if len(delays) == 0 {
+		t.Fatal("no polling delays were recorded")
+	}
+	if delays[0] <= time.Second {
+		t.Fatalf("first delay after slow_down = %v, want > 1s", delays[0])
+	}
+}
+
+func TestDeviceLoginTerminalErrorsFailWithoutCredentials(t *testing.T) {
+	for _, errorCode := range []string{"expired_token", "access_denied", "invalid_grant"} {
+		t.Run(errorCode, func(t *testing.T) {
+			setTestConfigHome(t)
+
+			server := newDeviceTestServer(t, deviceServerOptions{
+				TokenErrors: []string{errorCode},
+				MeStatus:    http.StatusOK,
+			})
+			defer server.Close()
+
+			stdout, stderr, err := executeCLIWithDeviceSleep(t, []string{"--server", server.URL, "login", "--device"}, recordSleeps(nil))
+			if err == nil {
+				t.Fatalf("login --device succeeded after %s", errorCode)
+			}
+			assertNoSecretLeak(t, stdout, stderr)
+			assertNoCredentialsFile(t)
+		})
+	}
+}
+
+func TestDeviceLoginExpiresWhilePending(t *testing.T) {
+	setTestConfigHome(t)
+
+	server := newDeviceTestServer(t, deviceServerOptions{
+		TokenErrors: []string{"authorization_pending", "authorization_pending", "authorization_pending"},
+		ExpiresIn:   2,
+		MeStatus:    http.StatusOK,
+	})
+	defer server.Close()
+
+	stdout, stderr, err := executeCLIWithDeviceSleep(t, []string{"--server", server.URL, "login", "--device"}, recordSleeps(nil))
+	if err == nil {
+		t.Fatal("login --device succeeded after expiration")
+	}
+	if !strings.Contains(stderr, "expired") {
+		t.Fatalf("stderr = %q, want expiration message", stderr)
+	}
+	assertNoSecretLeak(t, stdout, stderr)
+	assertNoCredentialsFile(t)
+}
+
+func TestDeviceLoginMeUnauthorizedFailsClosed(t *testing.T) {
+	setTestConfigHome(t)
+
+	server := newDeviceTestServer(t, deviceServerOptions{MeStatus: http.StatusUnauthorized})
+	defer server.Close()
+
+	stdout, stderr, err := executeCLIWithDeviceSleep(t, []string{"--server", server.URL, "login", "--device"}, recordSleeps(nil))
+	if err == nil {
+		t.Fatal("login --device succeeded with /me 401")
+	}
+	assertNoSecretLeak(t, stdout, stderr)
+	assertNoCredentialsFile(t)
+}
+
+func TestDeviceLoginInvalidServerFails(t *testing.T) {
+	setTestConfigHome(t)
+
+	stdout, stderr, err := executeCLIWithDeviceSleep(t, []string{"--server", "garbage", "login", "--device"}, recordSleeps(nil))
+	if err == nil {
+		t.Fatal("login --device succeeded with invalid server")
+	}
+	if !strings.Contains(stderr, "invalid server URL") {
+		t.Fatalf("stderr = %q, want invalid server message", stderr)
+	}
+	assertNoSecretLeak(t, stdout, stderr)
 }
 
 func TestWhoamiPrintsHumanAndJSONIdentity(t *testing.T) {
@@ -283,6 +419,16 @@ func executeCLI(t *testing.T, args []string, opener func(string) error) (string,
 	return stdout.String(), stderr.String(), err
 }
 
+func executeCLIWithDeviceSleep(t *testing.T, args []string, sleep func(context.Context, time.Duration) error) (string, string, error) {
+	t.Helper()
+
+	oldDeviceSleep := deviceSleep
+	deviceSleep = sleep
+	t.Cleanup(func() { deviceSleep = oldDeviceSleep })
+
+	return executeCLI(t, args, nil)
+}
+
 func newAuthTestServer(t *testing.T, meStatus int) *httptest.Server {
 	t.Helper()
 
@@ -347,6 +493,91 @@ func newWhoamiTestServer(t *testing.T, statusCode int) *httptest.Server {
 	}))
 }
 
+type deviceServerOptions struct {
+	TokenErrors []string
+	ExpiresIn   int
+	MeStatus    int
+}
+
+func newDeviceTestServer(t *testing.T, opts deviceServerOptions) *httptest.Server {
+	t.Helper()
+
+	if opts.ExpiresIn == 0 {
+		opts.ExpiresIn = 60
+	}
+	if opts.MeStatus == 0 {
+		opts.MeStatus = http.StatusOK
+	}
+
+	var pollCount atomic.Int64
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/cli/device":
+			if r.Method != http.MethodPost {
+				t.Fatalf("device create method = %s, want POST", r.Method)
+			}
+
+			var body struct {
+				Label string `json:"label"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode device create body: %v", err)
+			}
+			if body.Label == "" {
+				t.Fatal("device create body missing label")
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"device_code":%q,"user_code":"USER-CODE","verification_uri":"https://verify.example.test","verification_uri_complete":"https://verify.example.test/complete","interval":1,"expires_in":%d}`, testDeviceCode, opts.ExpiresIn)
+		case "/api/v1/cli/device/token":
+			if r.Method != http.MethodPost {
+				t.Fatalf("device token method = %s, want POST", r.Method)
+			}
+
+			var body struct {
+				DeviceCode string `json:"device_code"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode device token body: %v", err)
+			}
+			if body.DeviceCode != testDeviceCode {
+				t.Fatal("device token body did not include expected device code")
+			}
+
+			idx := int(pollCount.Add(1)) - 1
+			w.Header().Set("Content-Type", "application/json")
+			if idx < len(opts.TokenErrors) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprintf(w, `{"error":%q}`, opts.TokenErrors[idx])
+
+				return
+			}
+
+			_, _ = fmt.Fprintf(w, `{"token":%q}`, testToken)
+		case "/api/v1/me":
+			if r.Header.Get("Authorization") != "Bearer "+testToken {
+				t.Fatal("/me request missing expected authorization header")
+			}
+			w.WriteHeader(opts.MeStatus)
+			if opts.MeStatus == http.StatusOK {
+				_, _ = io.WriteString(w, `{"id":42,"name":"Ada Lovelace","email":"ada@example.test"}`)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func recordSleeps(delays *[]time.Duration) func(context.Context, time.Duration) error {
+	return func(_ context.Context, delay time.Duration) error {
+		if delays != nil {
+			*delays = append(*delays, delay)
+		}
+
+		return nil
+	}
+}
+
 func openerGET(t *testing.T) func(string) error {
 	t.Helper()
 
@@ -387,6 +618,16 @@ func assertNoTokenLeak(t *testing.T, streams ...string) {
 	for _, stream := range streams {
 		if strings.Contains(stream, testToken) {
 			t.Fatalf("stream leaked token: %q", stream)
+		}
+	}
+}
+
+func assertNoSecretLeak(t *testing.T, streams ...string) {
+	t.Helper()
+
+	for _, stream := range streams {
+		if strings.Contains(stream, testToken) || strings.Contains(stream, testDeviceCode) {
+			t.Fatalf("stream leaked token or device code: %q", stream)
 		}
 	}
 }

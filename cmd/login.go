@@ -13,7 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var deviceSleep func(context.Context, time.Duration) error
+
 func newLoginCommand(server *string) *cobra.Command {
+	var device bool
 	var label string
 	var timeout time.Duration
 
@@ -22,17 +25,18 @@ func newLoginCommand(server *string) *cobra.Command {
 		Short: "Authenticate with a Capstan server",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runLogin(cmd, *server, label, timeout)
+			return runLogin(cmd, *server, label, timeout, device)
 		},
 	}
 
+	cmd.Flags().BoolVar(&device, "device", false, "Use device-code login for headless environments")
 	cmd.Flags().StringVar(&label, "label", "", "Device label shown during authorization")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Login approval timeout")
 
 	return cmd
 }
 
-func runLogin(cmd *cobra.Command, serverFlag, label string, timeout time.Duration) error {
+func runLogin(cmd *cobra.Command, serverFlag, label string, timeout time.Duration, device bool) error {
 	server, err := config.ResolveServer(serverFlag)
 	if err != nil {
 		return err
@@ -48,11 +52,26 @@ func runLogin(cmd *cobra.Command, serverFlag, label string, timeout time.Duratio
 	ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 	defer cancel()
 
-	token, err := auth.LoopbackLogin(ctx, auth.LoopbackOptions{
-		Server: server,
-		Label:  label,
-		Open:   openBrowser,
-	})
+	var token string
+	if device {
+		token, err = auth.DeviceLogin(ctx, auth.DeviceOptions{
+			Server:  server,
+			Label:   label,
+			Timeout: timeout,
+			Sleep:   deviceSleep,
+			Prompt: func(prompt auth.DevicePrompt) error {
+				_, promptErr := fmt.Fprintf(cmd.OutOrStdout(), "Open %s and approve the login with code %s.\n", prompt.VerificationURIComplete, prompt.UserCode)
+
+				return promptErr
+			},
+		})
+	} else {
+		token, err = auth.LoopbackLogin(ctx, auth.LoopbackOptions{
+			Server: server,
+			Label:  label,
+			Open:   openBrowser,
+		})
+	}
 	if err != nil {
 		return err
 	}
