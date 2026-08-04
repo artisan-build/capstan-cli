@@ -4,12 +4,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ErrNotLoggedIn is returned when no saved credentials exist.
 var ErrNotLoggedIn = errors.New("not logged in")
+
+// DefaultServer is used when no flag, environment, or stored server is configured.
+const DefaultServer = "https://artisan-build.gproxyt.com"
 
 // Credentials are the persisted Capstan server credentials.
 type Credentials struct {
@@ -25,6 +30,53 @@ func (c Credentials) String() string {
 // GoString redacts the token for %#v formatting.
 func (c Credentials) GoString() string {
 	return fmt.Sprintf(`config.Credentials{Token:%q, Server:%q}`, "[REDACTED]", c.Server)
+}
+
+// CleanServer trims whitespace and trailing slashes from a server base URL.
+func CleanServer(server string) string {
+	return strings.TrimRight(strings.TrimSpace(server), "/")
+}
+
+// ResolveServer returns the server URL using flag > env > stored credentials > default precedence.
+func ResolveServer(flagServer string) (string, error) {
+	if server := CleanServer(flagServer); server != "" {
+		return validateServer(server)
+	}
+
+	if server := CleanServer(os.Getenv("CAPSTAN_SERVER")); server != "" {
+		return validateServer(server)
+	}
+
+	creds, err := Load()
+	if err == nil {
+		if server := CleanServer(creds.Server); server != "" {
+			return validateServer(server)
+		}
+	} else if !errors.Is(err, ErrNotLoggedIn) {
+		return "", err
+	}
+
+	return validateServer(DefaultServer)
+}
+
+func validateServer(server string) (string, error) {
+	parsed, err := url.Parse(server)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid server URL %q", server)
+	}
+
+	if parsed.Scheme == "https" {
+		return server, nil
+	}
+
+	if parsed.Scheme == "http" {
+		host := parsed.Hostname()
+		if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+			return server, nil
+		}
+	}
+
+	return "", fmt.Errorf("invalid server URL %q: use https unless targeting localhost", server)
 }
 
 // Path returns the credentials file path for the current environment.

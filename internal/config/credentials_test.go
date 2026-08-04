@@ -125,6 +125,96 @@ func TestCredentialsFormattingRedactsToken(t *testing.T) {
 	}
 }
 
+func TestResolveServerPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		flagServer string
+		envServer  string
+		stored     string
+		want       string
+	}{
+		{
+			name:       "default",
+			flagServer: "",
+			envServer:  "",
+			stored:     "",
+			want:       DefaultServer,
+		},
+		{
+			name:       "stored",
+			flagServer: "",
+			envServer:  "",
+			stored:     "https://stored.example.test/",
+			want:       "https://stored.example.test",
+		},
+		{
+			name:       "env over stored",
+			flagServer: "",
+			envServer:  "https://env.example.test/",
+			stored:     "https://stored.example.test/",
+			want:       "https://env.example.test",
+		},
+		{
+			name:       "flag over env and stored",
+			flagServer: "https://flag.example.test/",
+			envServer:  "https://env.example.test/",
+			stored:     "https://stored.example.test/",
+			want:       "https://flag.example.test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setXDGConfigHome(t)
+			t.Setenv("CAPSTAN_SERVER", tt.envServer)
+
+			if tt.stored != "" {
+				if err := Save(Credentials{Token: "test-token-123", Server: tt.stored}); err != nil {
+					t.Fatalf("Save returned error: %v", err)
+				}
+			}
+
+			got, err := ResolveServer(tt.flagServer)
+			if err != nil {
+				t.Fatalf("ResolveServer returned error: %v", err)
+			}
+
+			if got != tt.want {
+				t.Fatalf("ResolveServer() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveServerValidatesScheme(t *testing.T) {
+	tests := []struct {
+		name    string
+		server  string
+		wantErr bool
+	}{
+		{name: "https host", server: "https://example.com", wantErr: false},
+		{name: "http ipv4 loopback", server: "http://127.0.0.1:8080", wantErr: false},
+		{name: "http localhost", server: "http://localhost", wantErr: false},
+		{name: "http remote rejected", server: "http://example.com", wantErr: true},
+		{name: "ftp rejected", server: "ftp://x", wantErr: true},
+		{name: "garbage rejected", server: "garbage", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setXDGConfigHome(t)
+
+			_, err := ResolveServer(tt.server)
+			if tt.wantErr && err == nil {
+				t.Fatal("ResolveServer returned nil error, want rejection")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ResolveServer returned error: %v", err)
+			}
+		})
+	}
+}
+
 func setXDGConfigHome(t *testing.T) string {
 	t.Helper()
 
