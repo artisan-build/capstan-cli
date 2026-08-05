@@ -2,14 +2,15 @@
 
 Release distribution is handled by GoReleaser from `.github/workflows/release.yml` when a `v*` tag is pushed or the workflow is run manually.
 
+This is a **public** repository, so release artifacts are distributed as **GitHub Release** assets (like the `bg-remover` binary) — no separate download host or object-storage bucket is required.
+
 ## Owner Prerequisites
 
 - Generate the Capstan release GPG key.
 - Commit the armored public key to `RELEASE-SIGNING-KEY.asc`. Never commit the private key.
 - Replace the placeholder in `RELEASE-SIGNING-FINGERPRINT` with the generated key fingerprint. This is the only authoritative pinned fingerprint location; workflow enforcement and docs should read from this file.
-- Populate GitHub Actions secrets: `GPG_PRIVATE_KEY_BASE64`, `GPG_PASSPHRASE`, `CAPSTAN_BUCKET_KEY`, `CAPSTAN_BUCKET_SECRET`, `CAPSTAN_BUCKET_NAME`, `CAPSTAN_BUCKET_ENDPOINT`, optional `CAPSTAN_BUCKET_REGION`, and `HOMEBREW_TAP_TOKEN`.
-- Confirm or create the `artisan-build/homebrew-tap` repository and grant `HOMEBREW_TAP_TOKEN` write access.
-- Confirm the S3-compatible artifacts bucket, endpoint, region if required, and public base URL for `cli/<version>/...` downloads.
+- Populate GitHub Actions secrets: `GPG_PRIVATE_KEY_BASE64`, `GPG_PASSPHRASE`, and `HOMEBREW_TAP_TOKEN`.
+- Confirm or create the `artisan-build/homebrew-tap` repository and grant `HOMEBREW_TAP_TOKEN` write access. (Without this token the release still succeeds — the Homebrew cask step is skipped.)
 
 ## Release
 
@@ -18,7 +19,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-GoReleaser builds `capstan` for macOS, Linux, and Windows, uploads archives to `cli/<version>/...` in the configured bucket, updates the Homebrew tap when `HOMEBREW_TAP_TOKEN` is present, and mirrors the archives, checksum file, and detached armored signature to the GitHub release.
+GoReleaser builds `capstan` for macOS, Linux, and Windows, publishes the archives, checksum file, and detached armored signature as assets on the GitHub Release, and updates the Homebrew tap cask when `HOMEBREW_TAP_TOKEN` is present.
 
 ## Verify A Download
 
