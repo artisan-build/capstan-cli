@@ -7,8 +7,9 @@ server (auth + gated artifact host, and eventually the local always-on runner).
 
 - `capstan version` — print the built CLI version. Development builds report `dev`; release builds can
   override it with Go linker flags.
-- `capstan login` — authenticate against a Capstan server and store a durable token in your environment
-  so agents can act without ever handling the token themselves. Loopback browser flow by default;
+- `capstan login` — authenticate against a Capstan server and store its URL plus a durable token in
+  your environment so agents can act without ever handling the token themselves. Pass `--server`, set
+  `CAPSTAN_SERVER`, or enter the server URL when prompted. Loopback browser flow by default;
   `--device` for a headless device-code flow.
 - `capstan artifact create --file <path> [--visibility org|signed] [--team <slug>] [--expires <dur>]` —
   upload an artifact to the Capstan server and print its share URL. This is how agents publish

@@ -81,6 +81,10 @@ func runArtifactCreate(cmd *cobra.Command, serverFlag string, opts artifactCreat
 
 	server, err := config.ResolveServer(serverFlag)
 	if err != nil {
+		if errors.Is(err, config.ErrNoServer) {
+			return errors.New("no server configured: run capstan login, pass --server, or set CAPSTAN_SERVER")
+		}
+
 		return err
 	}
 	if server != config.CleanServer(creds.Server) {

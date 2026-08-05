@@ -132,13 +132,14 @@ func TestResolveServerPrecedence(t *testing.T) {
 		envServer  string
 		stored     string
 		want       string
+		wantErr    error
 	}{
 		{
-			name:       "default",
+			name:       "unset",
 			flagServer: "",
 			envServer:  "",
 			stored:     "",
-			want:       DefaultServer,
+			wantErr:    ErrNoServer,
 		},
 		{
 			name:       "stored",
@@ -175,6 +176,13 @@ func TestResolveServerPrecedence(t *testing.T) {
 			}
 
 			got, err := ResolveServer(tt.flagServer)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("ResolveServer error = %v, want %v", err, tt.wantErr)
+				}
+
+				return
+			}
 			if err != nil {
 				t.Fatalf("ResolveServer returned error: %v", err)
 			}

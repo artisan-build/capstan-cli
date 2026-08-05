@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -15,6 +17,21 @@ import (
 
 var deviceSleep func(context.Context, time.Duration) error
 
+var stdinIsTerminal = func() bool {
+	fi, err := os.Stdin.Stat()
+
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+var readStdinLine = func() (string, error) {
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if errors.Is(err, io.EOF) && line != "" {
+		return line, nil
+	}
+
+	return line, err
+}
+
 func newLoginCommand(server *string) *cobra.Command {
 	var device bool
 	var label string
@@ -22,7 +39,8 @@ func newLoginCommand(server *string) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Authenticate with a Capstan server",
+		Short: "Authenticate with a Capstan server and save its URL",
+		Long:  "Authenticate with a Capstan server and save its URL. Provide the server with --server or CAPSTAN_SERVER, or enter it when prompted in an interactive terminal.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runLogin(cmd, *server, label, timeout, device)
@@ -39,7 +57,14 @@ func newLoginCommand(server *string) *cobra.Command {
 func runLogin(cmd *cobra.Command, serverFlag, label string, timeout time.Duration, device bool) error {
 	server, err := config.ResolveServer(serverFlag)
 	if err != nil {
-		return err
+		if !errors.Is(err, config.ErrNoServer) {
+			return err
+		}
+
+		server, err = promptForServer(cmd)
+		if err != nil {
+			return err
+		}
 	}
 
 	if label == "" {
@@ -93,4 +118,32 @@ func runLogin(cmd *cobra.Command, serverFlag, label string, timeout time.Duratio
 	_, err = fmt.Fprintf(cmd.OutOrStdout(), "logged in to %s as %s <%s>\n", server, identity.Name, identity.Email)
 
 	return err
+}
+
+func promptForServer(cmd *cobra.Command) (string, error) {
+	if !stdinIsTerminal() {
+		return "", errors.New("no server configured: pass --server or set CAPSTAN_SERVER")
+	}
+
+	var lastErr error
+	for range 3 {
+		if _, err := fmt.Fprint(cmd.ErrOrStderr(), "Capstan server URL: "); err != nil {
+			return "", err
+		}
+
+		line, err := readStdinLine()
+		if err != nil {
+			return "", err
+		}
+
+		server, err := config.ValidateServer(config.CleanServer(line))
+		if err == nil {
+			return server, nil
+		}
+
+		lastErr = err
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), err)
+	}
+
+	return "", fmt.Errorf("invalid server URL after 3 attempts: %w", lastErr)
 }
