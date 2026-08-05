@@ -25,7 +25,7 @@ func newRootCommand() *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	rootCmd.PersistentFlags().StringVar(&server, "server", "", "Capstan server base URL")
+	rootCmd.PersistentFlags().StringVar(&server, "server", "", "Capstan server base URL (overrides CAPSTAN_SERVER and saved login server)")
 
 	rootCmd.AddCommand(newArtifactCommand(&server))
 	rootCmd.AddCommand(newLoginCommand(&server))

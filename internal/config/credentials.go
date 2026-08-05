@@ -13,8 +13,8 @@ import (
 // ErrNotLoggedIn is returned when no saved credentials exist.
 var ErrNotLoggedIn = errors.New("not logged in")
 
-// DefaultServer is used when no flag, environment, or stored server is configured.
-const DefaultServer = "https://artisan-build.gproxyt.com"
+// ErrNoServer is returned when no server is configured.
+var ErrNoServer = errors.New("no server configured")
 
 // Credentials are the persisted Capstan server credentials.
 type Credentials struct {
@@ -37,7 +37,7 @@ func CleanServer(server string) string {
 	return strings.TrimRight(strings.TrimSpace(server), "/")
 }
 
-// ResolveServer returns the server URL using flag > env > stored credentials > default precedence.
+// ResolveServer returns the server URL using flag > env > stored credentials precedence.
 func ResolveServer(flagServer string) (string, error) {
 	if server := CleanServer(flagServer); server != "" {
 		return validateServer(server)
@@ -56,7 +56,12 @@ func ResolveServer(flagServer string) (string, error) {
 		return "", err
 	}
 
-	return validateServer(DefaultServer)
+	return "", ErrNoServer
+}
+
+// ValidateServer validates a cleaned server base URL.
+func ValidateServer(server string) (string, error) {
+	return validateServer(server)
 }
 
 func validateServer(server string) (string, error) {

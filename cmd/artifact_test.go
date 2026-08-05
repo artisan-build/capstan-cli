@@ -248,6 +248,25 @@ func TestArtifactCreateRequiresLoginBeforeRequest(t *testing.T) {
 	assertNoTokenLeak(t, stdout, stderr)
 }
 
+func TestArtifactCreateWithoutConfiguredServerReturnsGuidance(t *testing.T) {
+	setTestConfigHome(t)
+	filePath := writeArtifactFile(t, "artifact.html", "<html></html>")
+	if err := config.Save(config.Credentials{Token: testToken, Server: ""}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	stdout, stderr, err := executeCLI(t, []string{"artifact", "create", "--file", filePath}, nil)
+	if err == nil {
+		t.Fatal("artifact create succeeded without configured server")
+	}
+	for _, want := range []string{"capstan login", "--server", "CAPSTAN_SERVER"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	}
+	assertNoTokenLeak(t, stdout, stderr)
+}
+
 func TestArtifactCreateDifferentServerDoesNotSendToken(t *testing.T) {
 	setTestConfigHome(t)
 	filePath := writeArtifactFile(t, "artifact.html", "<html></html>")

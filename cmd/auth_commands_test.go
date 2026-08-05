@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -71,6 +72,111 @@ func TestLoginSuccessfulFlowStoresCredentials(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("credentials file mode = %v, want 0600", got)
 	}
+}
+
+func TestLoginPromptsForServerWhenInteractiveAndStoresCredentials(t *testing.T) {
+	setTestConfigHome(t)
+
+	server, recorder := newAuthTestServer(t, authServerOptions{})
+	defer server.Close()
+	setServerPrompt(t, true, server.URL+"\n")
+
+	stdout, stderr, err := executeCLI(t, []string{"login", "--label", "test-host"}, func(authorizeURL string) error {
+		recorder.recordURL(authorizeURL)
+
+		return openerGET(t)(authorizeURL)
+	})
+	if err != nil {
+		t.Fatalf("login returned error: %v", err)
+	}
+	if !strings.Contains(stderr, "Capstan server URL: ") {
+		t.Fatalf("stderr = %q, want server prompt", stderr)
+	}
+	assertNoTokenLeak(t, stdout, stderr)
+
+	creds, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if creds.Server != server.URL {
+		t.Fatalf("stored server = %q, want %q", creds.Server, server.URL)
+	}
+	if got := recorder.exchangeCalls.Load(); got != 1 {
+		t.Fatalf("exchange endpoint called %d times, want 1", got)
+	}
+}
+
+func TestLoginWithoutServerNonInteractiveFailsWithoutPrompting(t *testing.T) {
+	setTestConfigHome(t)
+	setServerPrompt(t, false, "")
+
+	stdout, stderr, err := executeCLI(t, []string{"login"}, nil)
+	if err == nil {
+		t.Fatal("login succeeded without configured server")
+	}
+	if !strings.Contains(stderr, "no server configured: pass --server or set CAPSTAN_SERVER") {
+		t.Fatalf("stderr = %q, want non-interactive guidance", stderr)
+	}
+	if strings.Contains(stderr, "Capstan server URL") {
+		t.Fatalf("stderr = %q, did not want prompt", stderr)
+	}
+	assertNoTokenLeak(t, stdout, stderr)
+	assertNoCredentialsFile(t)
+}
+
+func TestPromptForServerNonInteractiveReturnsGuidanceWithoutPrompt(t *testing.T) {
+	setTestConfigHome(t)
+	setServerPrompt(t, false, "")
+
+	// The real isatty check cannot be unit-tested against /dev/null portably here;
+	// this injected-false path guards the /dev/null, pipe, and file behavior.
+	cmd := newRootCommand()
+	stderr := new(bytes.Buffer)
+	cmd.SetErr(stderr)
+
+	_, err := promptForServer(cmd)
+	if !errors.Is(err, errNoServerGuidance) {
+		t.Fatalf("promptForServer error = %v, want guidance", err)
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want no prompt", stderr.String())
+	}
+}
+
+func TestLoginPromptEOFReturnsGuidance(t *testing.T) {
+	setTestConfigHome(t)
+	setServerPrompt(t, true, "")
+
+	stdout, stderr, err := executeCLI(t, []string{"login"}, nil)
+	if err == nil {
+		t.Fatal("login succeeded after EOF")
+	}
+	if !strings.Contains(stderr, "no server configured: pass --server or set CAPSTAN_SERVER") {
+		t.Fatalf("stderr = %q, want guidance", stderr)
+	}
+	if strings.Contains(stderr, "EOF") {
+		t.Fatalf("stderr = %q, did not want bare EOF", stderr)
+	}
+	assertNoTokenLeak(t, stdout, stderr)
+	assertNoCredentialsFile(t)
+}
+
+func TestLoginPromptRejectsInvalidServerAfterThreeAttempts(t *testing.T) {
+	setTestConfigHome(t)
+	setServerPrompt(t, true, "garbage\nhttp://example.com\nftp://x\n")
+
+	stdout, stderr, err := executeCLI(t, []string{"login"}, nil)
+	if err == nil {
+		t.Fatal("login succeeded after invalid server prompts")
+	}
+	if got := strings.Count(stderr, "Capstan server URL: "); got != 3 {
+		t.Fatalf("prompt count = %d, want 3; stderr = %q", got, stderr)
+	}
+	if !strings.Contains(stderr, "invalid server URL after 3 attempts") {
+		t.Fatalf("stderr = %q, want retry cap error", stderr)
+	}
+	assertNoTokenLeak(t, stdout, stderr)
+	assertNoCredentialsFile(t)
 }
 
 func TestLoginStateMismatchFailsWithoutCredentials(t *testing.T) {
@@ -358,6 +464,24 @@ func TestWhoamiWithoutCredentialsFailsNotLoggedIn(t *testing.T) {
 	assertNoTokenLeak(t, stdout, stderr)
 }
 
+func TestWhoamiWithoutConfiguredServerReturnsGuidance(t *testing.T) {
+	setTestConfigHome(t)
+	if err := config.Save(config.Credentials{Token: testToken, Server: ""}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	stdout, stderr, err := executeCLI(t, []string{"whoami"}, nil)
+	if err == nil {
+		t.Fatal("whoami succeeded without configured server")
+	}
+	for _, want := range []string{"capstan login", "--server", "CAPSTAN_SERVER"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	}
+	assertNoTokenLeak(t, stdout, stderr)
+}
+
 func TestWhoamiUnauthorizedSuggestsLogin(t *testing.T) {
 	setTestConfigHome(t)
 
@@ -457,6 +581,27 @@ func executeCLIWithDeviceSleep(t *testing.T, args []string, sleep func(context.C
 	t.Cleanup(func() { deviceSleep = oldDeviceSleep })
 
 	return executeCLI(t, args, nil)
+}
+
+func setServerPrompt(t *testing.T, isTerminal bool, lines string) {
+	t.Helper()
+
+	oldStdinIsTerminal := stdinIsTerminal
+	oldReadStdinLine := readStdinLine
+	stdinIsTerminal = func() bool { return isTerminal }
+	reader := bufio.NewReader(strings.NewReader(lines))
+	readStdinLine = func() (string, error) {
+		line, err := reader.ReadString('\n')
+		if errors.Is(err, io.EOF) && line != "" {
+			return line, nil
+		}
+
+		return line, err
+	}
+	t.Cleanup(func() {
+		stdinIsTerminal = oldStdinIsTerminal
+		readStdinLine = oldReadStdinLine
+	})
 }
 
 type authServerOptions struct {
