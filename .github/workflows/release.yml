@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Prepare GPG home
+        run: |
+          GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+
+      - name: Import release signing key
+        env:
+          GPG_PRIVATE_KEY_BASE64: ${{ secrets.GPG_PRIVATE_KEY_BASE64 }}
+        run: |
+          test -n "$GPG_PRIVATE_KEY_BASE64"
+          printf '%s' "$GPG_PRIVATE_KEY_BASE64" | base64 --decode | gpg --batch --import
+
+      - name: Verify release signing key fingerprint
+        run: |
+          expected_fingerprint="$(tr -d '[:space:]' < RELEASE-SIGNING-FINGERPRINT)"
+          case "$expected_fingerprint" in
+            *FINGERPRINT*)
+              echo "RELEASE-SIGNING-FINGERPRINT must be populated before releases can run." >&2
+              exit 1
+              ;;
+          esac
+
+          gpg --batch --list-secret-keys --with-colons --fingerprint \
+            | awk -F: '/^fpr:/ { print $10 }' \
+            | grep -Fx "$expected_fingerprint"
+
+      # TODO: Add real macOS Developer ID codesigning/notarization later. Brew and curl
+      # installs do not set Gatekeeper quarantine, so this PR only adds GPG signatures.
+      - name: Resolve GoReleaser args
+        id: goreleaser-args
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "args=release --clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=release --clean --skip=homebrew" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CAPSTAN_BUCKET_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CAPSTAN_BUCKET_SECRET }}
+          CAPSTAN_BUCKET_NAME: ${{ secrets.CAPSTAN_BUCKET_NAME }}
+          CAPSTAN_BUCKET_ENDPOINT: ${{ secrets.CAPSTAN_BUCKET_ENDPOINT }}
+          CAPSTAN_BUCKET_REGION: ${{ secrets.CAPSTAN_BUCKET_REGION }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        with:
+          distribution: goreleaser
+          version: latest
+          args: ${{ steps.goreleaser-args.outputs.args }}

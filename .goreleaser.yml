@@ -1,0 +1,86 @@
+version: 2
+
+project_name: capstan
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: capstan
+    binary: capstan
+    main: .
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X github.com/artisan-build/capstan-cli/cmd.Version={{.Version}}
+
+archives:
+  - id: capstan
+    ids:
+      - capstan
+    name_template: capstan_{{.Version}}_{{.Os}}_{{.Arch}}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+signs:
+  - id: checksums
+    artifacts: checksum
+    signature: ${artifact}.asc
+    cmd: gpg
+    args:
+      - --batch
+      - --pinentry-mode
+      - loopback
+      - --passphrase
+      - "{{ .Env.GPG_PASSPHRASE }}"
+      - --detach-sign
+      - --armor
+      - --output
+      - ${signature}
+      - ${artifact}
+
+blobs:
+  - provider: s3
+    bucket: "{{ .Env.CAPSTAN_BUCKET_NAME }}"
+    region: "{{ .Env.CAPSTAN_BUCKET_REGION }}"
+    endpoint: "{{ .Env.CAPSTAN_BUCKET_ENDPOINT }}"
+    directory: cli/{{.Version}}
+
+homebrew_casks:
+  - name: capstan
+    ids:
+      - capstan
+    binaries:
+      - capstan
+    repository:
+      owner: artisan-build
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/artisan-build/capstan-cli
+    description: Command-line client for the Capstan ecosystem server.
+    license: MIT
+
+release:
+  github:
+    owner: artisan-build
+    name: capstan-cli
+  mode: append
