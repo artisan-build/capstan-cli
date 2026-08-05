@@ -70,11 +70,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.CAPSTAN_BUCKET_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CAPSTAN_BUCKET_SECRET }}
-          CAPSTAN_BUCKET_NAME: ${{ secrets.CAPSTAN_BUCKET_NAME }}
-          CAPSTAN_BUCKET_ENDPOINT: ${{ secrets.CAPSTAN_BUCKET_ENDPOINT }}
-          CAPSTAN_BUCKET_REGION: ${{ secrets.CAPSTAN_BUCKET_REGION }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         with:
           distribution: goreleaser

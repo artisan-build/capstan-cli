@@ -58,13 +58,6 @@ signs:
       - ${signature}
       - ${artifact}
 
-blobs:
-  - provider: s3
-    bucket: "{{ .Env.CAPSTAN_BUCKET_NAME }}"
-    region: "{{ .Env.CAPSTAN_BUCKET_REGION }}"
-    endpoint: "{{ .Env.CAPSTAN_BUCKET_ENDPOINT }}"
-    directory: cli/{{.Version}}
-
 homebrew_casks:
   - name: capstan
     ids:
