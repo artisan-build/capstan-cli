@@ -13,14 +13,15 @@ import (
 	"github.com/artisan-build/capstan-cli/internal/auth"
 	"github.com/artisan-build/capstan-cli/internal/config"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var deviceSleep func(context.Context, time.Duration) error
 
-var stdinIsTerminal = func() bool {
-	fi, err := os.Stdin.Stat()
+var errNoServerGuidance = errors.New("no server configured: pass --server or set CAPSTAN_SERVER")
 
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+var stdinIsTerminal = func() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 var readStdinLine = func() (string, error) {
@@ -122,7 +123,7 @@ func runLogin(cmd *cobra.Command, serverFlag, label string, timeout time.Duratio
 
 func promptForServer(cmd *cobra.Command) (string, error) {
 	if !stdinIsTerminal() {
-		return "", errors.New("no server configured: pass --server or set CAPSTAN_SERVER")
+		return "", errNoServerGuidance
 	}
 
 	var lastErr error
@@ -133,6 +134,10 @@ func promptForServer(cmd *cobra.Command) (string, error) {
 
 		line, err := readStdinLine()
 		if err != nil {
+			if errors.Is(err, io.EOF) && line == "" {
+				return "", errNoServerGuidance
+			}
+
 			return "", err
 		}
 

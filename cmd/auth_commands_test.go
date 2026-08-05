@@ -124,9 +124,46 @@ func TestLoginWithoutServerNonInteractiveFailsWithoutPrompting(t *testing.T) {
 	assertNoCredentialsFile(t)
 }
 
+func TestPromptForServerNonInteractiveReturnsGuidanceWithoutPrompt(t *testing.T) {
+	setTestConfigHome(t)
+	setServerPrompt(t, false, "")
+
+	// The real isatty check cannot be unit-tested against /dev/null portably here;
+	// this injected-false path guards the /dev/null, pipe, and file behavior.
+	cmd := newRootCommand()
+	stderr := new(bytes.Buffer)
+	cmd.SetErr(stderr)
+
+	_, err := promptForServer(cmd)
+	if !errors.Is(err, errNoServerGuidance) {
+		t.Fatalf("promptForServer error = %v, want guidance", err)
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want no prompt", stderr.String())
+	}
+}
+
+func TestLoginPromptEOFReturnsGuidance(t *testing.T) {
+	setTestConfigHome(t)
+	setServerPrompt(t, true, "")
+
+	stdout, stderr, err := executeCLI(t, []string{"login"}, nil)
+	if err == nil {
+		t.Fatal("login succeeded after EOF")
+	}
+	if !strings.Contains(stderr, "no server configured: pass --server or set CAPSTAN_SERVER") {
+		t.Fatalf("stderr = %q, want guidance", stderr)
+	}
+	if strings.Contains(stderr, "EOF") {
+		t.Fatalf("stderr = %q, did not want bare EOF", stderr)
+	}
+	assertNoTokenLeak(t, stdout, stderr)
+	assertNoCredentialsFile(t)
+}
+
 func TestLoginPromptRejectsInvalidServerAfterThreeAttempts(t *testing.T) {
 	setTestConfigHome(t)
-	setServerPrompt(t, true, "garbage\nhttp://example.com\n\n")
+	setServerPrompt(t, true, "garbage\nhttp://example.com\nftp://x\n")
 
 	stdout, stderr, err := executeCLI(t, []string{"login"}, nil)
 	if err == nil {
