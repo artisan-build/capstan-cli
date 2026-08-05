@@ -73,5 +73,5 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         with:
           distribution: goreleaser
-          version: latest
+          version: "~> v2"
           args: ${{ steps.goreleaser-args.outputs.args }}
