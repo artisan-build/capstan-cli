@@ -173,7 +173,10 @@ func validate(raw rawConfig) (Config, error) {
 			labels = make(map[string]string)
 			seenLabels[runner.Type] = labels
 		}
-		if prior, exists := labels[runner.Label]; exists {
+		// Launchd labels are case-sensitive identifiers and dedupe per runner type.
+		// Runner names are filesystem-bound, so they dedupe case-insensitively above.
+		labelKey := runner.Label
+		if prior, exists := labels[labelKey]; exists {
 			return Config{}, fmt.Errorf(
 				"%s field label %q duplicates runner %q",
 				where,
@@ -181,7 +184,7 @@ func validate(raw rawConfig) (Config, error) {
 				prior,
 			)
 		}
-		labels[runner.Label] = runner.Name
+		labels[labelKey] = runner.Name
 		cfg.Runners = append(cfg.Runners, runner)
 	}
 

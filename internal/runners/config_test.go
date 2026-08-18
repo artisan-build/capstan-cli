@@ -426,8 +426,26 @@ func TestLoadAcceptsUnknownTopLevelSections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load returned error for unknown top-level section: %v", err)
 	}
-	if len(cfg.Runners) != 1 || cfg.Runners[0].Name != "known-runner" {
-		t.Fatalf("Runners = %#v, want known-runner", cfg.Runners)
+	if len(cfg.Runners) != 1 {
+		t.Fatalf("Runners length = %d, want 1", len(cfg.Runners))
+	}
+	want := Runner{Name: "known-runner", Type: RunnerTypeLaunchd, Label: "test.known-runner"}
+	if cfg.Runners[0] != want {
+		t.Errorf("Load runner = %+v, want %+v", cfg.Runners[0], want)
+	}
+}
+
+func TestLoadAllowsLaunchdLabelsDifferingOnlyByCase(t *testing.T) {
+	inbox := t.TempDir()
+	state := t.TempDir()
+	runners := validRunnerYAML("upper-label", "test.Runner") + "\n" + validRunnerYAML("lower-label", "test.runner")
+
+	cfg, err := Load(writeConfig(t, t.TempDir(), configYAML(inbox, state, runners)))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(cfg.Runners) != 2 {
+		t.Fatalf("Runners length = %d, want 2", len(cfg.Runners))
 	}
 }
 
