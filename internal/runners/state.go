@@ -61,9 +61,6 @@ func (s *StateStore) Save(state State) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fmt.Errorf("create runner state directory %q: %w", s.dir, err)
 	}
-	if err := os.Chmod(s.dir, 0o700); err != nil {
-		return fmt.Errorf("secure runner state directory %q: %w", s.dir, err)
-	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {

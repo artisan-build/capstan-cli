@@ -11,15 +11,14 @@ import "context"
 type Health struct {
 	// Present is false when the label is not loaded in launchd at all.
 	Present bool
-	// HasRun is false when launchd reports "last exit code = (never exited)".
-	// When false, LastExitStatus is meaningless and must not be interpreted.
+	// HasRun is true when launchd reports either a numeric last exit code or a
+	// last exit reason. When false, LastExitStatus is meaningless.
 	HasRun bool
-	// LastExitStatus is launchd's wait status. A negative value means the job
-	// was terminated by signal -LastExitStatus; it is not an exit code.
+	// LastExitStatus is launchd's numeric last exit code when one is present.
+	// Reason-only terminations do not carry an exit code.
 	LastExitStatus int
-	// ExitReason must be considered with LastExitStatus. In particular,
-	// JETSAM_REASON_MEMORY_IDLE_EXIT with status -9 is a healthy idle exit, while
-	// a genuine signal termination or non-zero non-idle exit is a failure.
+	// ExitReason is a first-class termination signal. Memory idle exit is a
+	// healthy lifecycle event; every other reason is a failure.
 	ExitReason string
 	// Runs is launchd's monotonic run counter. Comparing it across checks is the
 	// only launchd-native way to detect a silently dead periodic job.

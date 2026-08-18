@@ -54,17 +54,26 @@ func Classify(
 	prior *RunnerState,
 	now time.Time,
 ) (Classification, RunnerState, error) {
-	updated, coldStart := updateRunnerState(prior, health.Runs, now)
 	classification := Classification{Runner: runner.Name, Kind: FailureHealthy}
 
 	if !health.Present {
 		classification.Kind = FailureNotLoaded
+		if prior == nil {
+			return classification, RunnerState{FirstSeenAt: now}, nil
+		}
+
+		return classification, *prior, nil
+	}
+
+	updated, coldStart := updateRunnerState(prior, health.Runs, now)
+
+	// Exit failures precede staleness because they provide the more actionable diagnosis.
+	if health.ExitReason != "" && health.ExitReason != jetsamMemoryIdleExit {
+		classification.Kind = FailureNonzeroExit
 
 		return classification, updated, nil
 	}
-
-	// Exit failures precede staleness because they provide the more actionable diagnosis.
-	if health.HasRun && health.LastExitStatus != 0 && health.ExitReason != jetsamMemoryIdleExit {
+	if health.ExitReason == "" && health.HasRun && health.LastExitStatus != 0 {
 		classification.Kind = FailureNonzeroExit
 
 		return classification, updated, nil

@@ -1,11 +1,67 @@
-gui/501/com.example.failed = {
+gui/UID/com.example.gateway = {
 	active count = 0
-	path = /Users/example/Library/LaunchAgents/com.example.failed.plist
+	path = /Users/REDACTED/Library/LaunchAgents/com.example.gateway.plist
 	type = LaunchAgent
-	state = not running
+	state = spawn scheduled
 
-	program = /usr/local/bin/example
-	runs = 8
-	last exit code = 17
-	last exit reason = EXIT_REASON_EXITED
+	program = /opt/homebrew/bin/node
+	arguments = {
+		/opt/homebrew/bin/node
+		/opt/homebrew/lib/node_modules/example/dist/entry.js
+		gateway
+		--port
+		18789
+	}
+
+	stdout path = /Users/REDACTED/.example/logs/gateway.log
+	stderr path = /Users/REDACTED/.example/logs/gateway.err.log
+	inherited environment = {
+		SSH_AUTH_SOCK => /var/run/com.apple.launchd.REDACTED/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		EXAMPLE_SERVICE_KIND => gateway
+		EXAMPLE_GATEWAY_TOKEN => REDACTED
+		PATH => /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+		HOME => /Users/REDACTED
+		XPC_SERVICE_NAME => com.example.gateway
+	}
+
+	domain = gui/UID [REDACTED]
+	asid = REDACTED
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 313460
+	last exit code = 1
+
+	resource coalition = {
+		ID = REDACTED
+		type = resource
+		state = active
+		active count = 1
+		name = com.example.gateway
+	}
+
+	jetsam coalition = {
+		ID = REDACTED
+		type = jetsam
+		state = active
+		active count = 1
+		name = com.example.gateway
+	}
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+
+	properties = partial import | keepalive | runatload | inferred program | managed LWCR | has LWCR
 }

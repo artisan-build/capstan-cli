@@ -1,11 +1,126 @@
-gui/501/com.example.ondemand = {
-	active count = 0
-	path = /Users/example/Library/LaunchAgents/com.example.ondemand.plist
+gui/UID/com.apple.syncdefaultsd = {
+	active count = 5
+	path = /System/Library/LaunchAgents/com.apple.syncdefaultsd.plist
 	type = LaunchAgent
-	state = not running
+	state = running
 
-	program = /usr/local/bin/example
-	runs = 713
-	last exit code = -9
+	program = /System/Library/PrivateFrameworks/SyncedDefaults.framework/Support/syncdefaultsd
+	arguments = {
+		/System/Library/PrivateFrameworks/SyncedDefaults.framework/Support/syncdefaultsd
+	}
+
+	inherited environment = {
+		SSH_AUTH_SOCK => /var/run/com.apple.launchd.REDACTED/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		MallocSpaceEfficient => 1
+		XPC_SERVICE_NAME => com.apple.syncdefaultsd
+	}
+
+	domain = gui/UID [REDACTED]
+	asid = REDACTED
+	minimum runtime = 10
+	base minimum runtime = 10
+	exit timeout = 5
+	runs = 430
+	pid = REDACTED
+	immediate reason = ipc (mach)
+	forks = 0
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	checked allocations = 0 (queried = 1)
+	checked allocations reason = no host
+	checked allocations flags = 0x0
 	last exit reason = JETSAM_REASON_MEMORY_IDLE_EXIT
+	last jetsam exit details = JETSAM_REASON_MEMORY_IDLE_EXIT
+
+	event triggers = {
+		com.apple.kvs.periodic-analytics => {
+			keepalive = 0
+			service = com.apple.syncdefaultsd
+			stream = com.apple.xpc.activity
+			monitor = com.apple.UserEventAgent-Aqua
+			descriptor = {
+				"Repeating" => true
+				"_SequenceNumber" => 2
+				"Interval" => 86400
+				"Priority" => "Maintenance"
+			}
+		}
+	}
+
+	endpoints = {
+		"com.apple.kvsd" = {
+			port = 0x49603
+			active = 1
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 0
+		}
+		"com.apple.aps.kvsd" = {
+			port = 0x49573
+			active = 1
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 0
+		}
+	}
+
+	event channels = {
+		"com.apple.xpc.activity" = {
+			port = 0x5a403
+			active = 1
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 0
+		}
+		"com.apple.bg.system.task" = {
+			port = 0x59a03
+			active = 1
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 0
+		}
+	}
+
+	resource coalition = {
+		ID = REDACTED
+		type = resource
+		state = active
+		active count = 1
+		name = com.apple.syncdefaultsd
+	}
+
+	jetsam coalition = {
+		ID = REDACTED
+		type = jetsam
+		state = active
+		active count = 1
+		name = com.apple.syncdefaultsd
+	}
+
+	spawn type = adaptive (6)
+	jetsam priority = 40
+	jetsam memory limit (active, soft) = 55 MB
+	jetsam memory limit (inactive, soft) = 55 MB
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+	exponential throttling grace limit = 10
+	job state = running
+
+	properties = supports transactions | supports pressured exit | inferred program | system service | exponential throttling | tle system
 }

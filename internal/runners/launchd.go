@@ -20,7 +20,7 @@ type LaunchdReader struct {
 
 var _ HealthReader = (*LaunchdReader)(nil)
 
-// NewLaunchdReader returns a reader for the current user's launchd domain.
+// NewLaunchdReader returns a reader for the current user and system launchd domains.
 func NewLaunchdReader() *LaunchdReader {
 	return &LaunchdReader{
 		uid: os.Getuid(),
@@ -36,32 +36,46 @@ func (r *LaunchdReader) Read(ctx context.Context, runner Runner) (Health, error)
 		return Health{}, fmt.Errorf("read runner %q: unsupported type %q", runner.Name, runner.Type)
 	}
 
-	target := fmt.Sprintf("gui/%d/%s", r.uid, runner.Label)
-	out, err := r.runCommand(ctx, "launchctl", "print", target)
-	if err != nil {
-		if launchdServiceMissing(string(out)) {
-			return Health{Present: false}, nil
+	targets := []string{
+		fmt.Sprintf("gui/%d/%s", r.uid, runner.Label),
+		fmt.Sprintf("system/%s", runner.Label),
+	}
+	for i, target := range targets {
+		out, err := r.runCommand(ctx, "launchctl", "print", target)
+		if err != nil {
+			if launchdServiceMissing(string(out)) {
+				if i == len(targets)-1 {
+					return Health{Present: false}, nil
+				}
+
+				continue
+			}
+
+			return Health{}, fmt.Errorf("launchctl print %q: %w: %s", target, err, strings.TrimSpace(string(out)))
 		}
 
-		return Health{}, fmt.Errorf("launchctl print %q: %w: %s", target, err, strings.TrimSpace(string(out)))
+		health, err := parseLaunchctlPrint(string(out))
+		if err != nil {
+			return Health{}, fmt.Errorf("parse launchctl print %q: %w", target, err)
+		}
+
+		return health, nil
 	}
 
-	health, err := parseLaunchctlPrint(string(out))
-	if err != nil {
-		return Health{}, fmt.Errorf("parse launchctl print %q: %w", target, err)
-	}
-
-	return health, nil
+	return Health{Present: false}, nil
 }
 
 func parseLaunchctlPrint(out string) (Health, error) {
 	health := Health{Present: true}
 	foundRuns := false
-	foundExitCode := false
+	foundTermination := false
 
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		line, ok := launchdTopLevelField(scanner.Text())
+		if !ok {
+			continue
+		}
 		switch {
 		case strings.HasPrefix(line, "runs = "):
 			runs, err := parseLaunchdInt("runs", strings.TrimPrefix(line, "runs = "))
@@ -75,7 +89,7 @@ func parseLaunchctlPrint(out string) (Health, error) {
 			foundRuns = true
 		case strings.HasPrefix(line, "last exit code = "):
 			value := strings.TrimPrefix(line, "last exit code = ")
-			foundExitCode = true
+			foundTermination = true
 			if value == "(never exited)" {
 				health.HasRun = false
 				continue
@@ -88,7 +102,13 @@ func parseLaunchctlPrint(out string) (Health, error) {
 			health.HasRun = true
 			health.LastExitStatus = status
 		case strings.HasPrefix(line, "last exit reason = "):
-			health.ExitReason = strings.TrimSpace(strings.TrimPrefix(line, "last exit reason = "))
+			reason := strings.TrimSpace(strings.TrimPrefix(line, "last exit reason = "))
+			if reason == "" {
+				continue
+			}
+			health.ExitReason = reason
+			health.HasRun = true
+			foundTermination = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -97,11 +117,19 @@ func parseLaunchctlPrint(out string) (Health, error) {
 	if !foundRuns {
 		return Health{}, fmt.Errorf("output does not contain runs")
 	}
-	if !foundExitCode {
-		return Health{}, fmt.Errorf("output does not contain last exit code")
+	if !foundTermination {
+		return Health{}, fmt.Errorf("output does not contain last exit code or reason")
 	}
 
 	return health, nil
+}
+
+func launchdTopLevelField(line string) (string, bool) {
+	if !strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "\t\t") {
+		return "", false
+	}
+
+	return strings.TrimSpace(line), true
 }
 
 func parseLaunchdInt(field, value string) (int, error) {
