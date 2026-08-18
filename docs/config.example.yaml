@@ -1,0 +1,29 @@
+# Runner health always comes from the last exit status plus fresh real activity, never from a stdout log.
+inbox:
+  # Required directory where later Capstan commands can write runner health items.
+  path: ~/Herd/brain/inbox
+
+runners:
+  # Required stable, unique runner identifier used when deduplicating inbox items.
+  - name: ballast-rescore
+    # Required runner mechanism; launchd is currently the only supported type.
+    type: launchd
+    # Required launchd service label.
+    label: build.artisan.ballast-rescore
+    # Required interval between expected successful runs.
+    expected_cadence: 1h
+    # Optional freshness limit; when omitted it defaults to expected_cadence.
+    staleness_threshold: 30m
+    # Optional path to the runner's real activity marker; Ballast records completion here.
+    activity_source: ~/.ballast/last-run
+
+  # Required stable, unique runner identifier used when deduplicating inbox items.
+  - name: transcript-runner
+    # Required runner mechanism; launchd is currently the only supported type.
+    type: launchd
+    # Required launchd service label.
+    label: build.artisan.transcript-runner
+    # Required interval between expected successful runs.
+    expected_cadence: 15m
+    # Optional freshness limit; omitted here, so it defaults to expected_cadence (15m).
+    # Optional activity_source is also omitted; launchd's real scheduler activity is used.

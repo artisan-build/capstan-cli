@@ -29,6 +29,18 @@ go build -ldflags "-X github.com/artisan-build/capstan-cli/cmd.Version=0.1.0" -o
 ./capstan version
 ```
 
+## Runner configuration
+
+Local runners are configured in `$XDG_CONFIG_HOME/capstan/config.yaml`, falling back to
+`$HOME/.config/capstan/config.yaml`. Each launchd runner needs a unique `name`, its launchd `label`,
+and an `expected_cadence`. The optional `staleness_threshold` defaults to `expected_cadence`, giving
+one missed cycle of grace. Paths beginning with `~/` are expanded for `inbox.path` and
+`activity_source`.
+
+Runner health is based on the scheduler's last exit status and the freshness of real activity, never
+on stdout logs. See [`docs/config.example.yaml`](docs/config.example.yaml) for a fully commented
+configuration.
+
 ## Status
 
 Pre-launch. Built via the Capstan multi-agent build loop; see `.solo/workflow.md`.

@@ -84,8 +84,8 @@ func validateServer(server string) (string, error) {
 	return "", fmt.Errorf("invalid server URL %q: use https unless targeting localhost", server)
 }
 
-// Path returns the credentials file path for the current environment.
-func Path() (string, error) {
+// Dir returns Capstan's configuration directory for the current environment.
+func Dir() (string, error) {
 	configHome := os.Getenv("XDG_CONFIG_HOME")
 	if configHome == "" {
 		home := os.Getenv("HOME")
@@ -96,7 +96,17 @@ func Path() (string, error) {
 		configHome = filepath.Join(home, ".config")
 	}
 
-	return filepath.Join(configHome, "capstan", "credentials"), nil
+	return filepath.Join(configHome, "capstan"), nil
+}
+
+// Path returns the credentials file path for the current environment.
+func Path() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, "credentials"), nil
 }
 
 // Save writes credentials atomically using user-only file permissions.
