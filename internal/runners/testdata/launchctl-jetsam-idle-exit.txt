@@ -1,0 +1,11 @@
+gui/501/com.example.ondemand = {
+	active count = 0
+	path = /Users/example/Library/LaunchAgents/com.example.ondemand.plist
+	type = LaunchAgent
+	state = not running
+
+	program = /usr/local/bin/example
+	runs = 713
+	last exit code = -9
+	last exit reason = JETSAM_REASON_MEMORY_IDLE_EXIT
+}

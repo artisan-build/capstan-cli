@@ -1,0 +1,11 @@
+gui/501/com.example.failed = {
+	active count = 0
+	path = /Users/example/Library/LaunchAgents/com.example.failed.plist
+	type = LaunchAgent
+	state = not running
+
+	program = /usr/local/bin/example
+	runs = 8
+	last exit code = 17
+	last exit reason = EXIT_REASON_EXITED
+}

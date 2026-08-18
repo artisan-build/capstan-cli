@@ -1,0 +1,10 @@
+gui/501/com.example.success = {
+	active count = 0
+	path = /Users/example/Library/LaunchAgents/com.example.success.plist
+	type = LaunchAgent
+	state = not running
+
+	program = /usr/local/bin/example
+	runs = 42
+	last exit code = 0
+}

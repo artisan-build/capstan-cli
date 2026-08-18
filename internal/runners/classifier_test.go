@@ -1,0 +1,284 @@
+package runners
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+	"time"
+)
+
+func TestCheckRunnerClassifiesHealthAndUpdatesState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-3 * time.Hour)
+	priorUnchanged := RunnerState{Runs: 4, RunsChangedAt: old, FirstSeenAt: old}
+	priorZeroExit := RunnerState{Runs: 7, RunsChangedAt: now.Add(-time.Minute), FirstSeenAt: old}
+	cadencedRunner := Runner{
+		Name:               "runner",
+		Type:               RunnerTypeLaunchd,
+		Label:              "com.example.runner",
+		ExpectedCadence:    time.Hour,
+		StalenessThreshold: time.Hour,
+	}
+
+	tests := []struct {
+		name        string
+		runner      Runner
+		health      Health
+		prior       *RunnerState
+		activityAge *time.Duration
+		missingFile bool
+		want        Classification
+		wantState   RunnerState
+	}{
+		{
+			name:      "not loaded",
+			runner:    cadencedRunner,
+			health:    Health{Present: false, Runs: 4},
+			prior:     &priorUnchanged,
+			want:      Classification{Runner: "runner", Kind: FailureNotLoaded},
+			wantState: priorUnchanged,
+		},
+		{
+			name:      "zero exit fresh",
+			runner:    cadencedRunner,
+			health:    Health{Present: true, HasRun: true, Runs: 7},
+			prior:     &priorZeroExit,
+			want:      Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState: priorZeroExit,
+		},
+		{
+			name:      "nonzero exit",
+			runner:    cadencedRunner,
+			health:    Health{Present: true, HasRun: true, LastExitStatus: 17, Runs: 4},
+			prior:     &priorUnchanged,
+			want:      Classification{Runner: "runner", Kind: FailureNonzeroExit},
+			wantState: priorUnchanged,
+		},
+		{
+			name:   "jetsam idle exit",
+			runner: Runner{Name: "runner", Type: RunnerTypeLaunchd, Label: "com.example.runner"},
+			health: Health{
+				Present: true, HasRun: true, LastExitStatus: -9,
+				ExitReason: "JETSAM_REASON_MEMORY_IDLE_EXIT", Runs: 713,
+			},
+			prior:     &RunnerState{Runs: 713, RunsChangedAt: old, FirstSeenAt: old},
+			want:      Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState: RunnerState{Runs: 713, RunsChangedAt: old, FirstSeenAt: old},
+		},
+		{
+			name:      "signal kill without idle reason",
+			runner:    cadencedRunner,
+			health:    Health{Present: true, HasRun: true, LastExitStatus: -9, Runs: 4},
+			prior:     &priorUnchanged,
+			want:      Classification{Runner: "runner", Kind: FailureNonzeroExit},
+			wantState: priorUnchanged,
+		},
+		{
+			name:      "never exited is not an exit failure",
+			runner:    Runner{Name: "runner", Type: RunnerTypeLaunchd, Label: "com.example.runner"},
+			health:    Health{Present: true, HasRun: false, LastExitStatus: 99, Runs: 1},
+			prior:     &RunnerState{Runs: 1, RunsChangedAt: old, FirstSeenAt: old},
+			want:      Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState: RunnerState{Runs: 1, RunsChangedAt: old, FirstSeenAt: old},
+		},
+		{
+			name:      "cold start seeds baseline",
+			runner:    cadencedRunner,
+			health:    Health{Present: true, HasRun: true, Runs: 4},
+			want:      Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState: RunnerState{Runs: 4, RunsChangedAt: now, FirstSeenAt: now},
+		},
+		{
+			name:        "cold start ignores old activity source",
+			runner:      cadencedRunner,
+			health:      Health{Present: true, HasRun: true, Runs: 4},
+			activityAge: durationPointer(30 * 24 * time.Hour),
+			want:        Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState:   RunnerState{Runs: 4, RunsChangedAt: now, FirstSeenAt: now},
+		},
+		{
+			name:      "unchanged runs are stale",
+			runner:    cadencedRunner,
+			health:    Health{Present: true, HasRun: true, Runs: 4},
+			prior:     &priorUnchanged,
+			want:      Classification{Runner: "runner", Kind: FailureStale},
+			wantState: priorUnchanged,
+		},
+		{
+			name:   "incremented runs refresh baseline",
+			runner: cadencedRunner,
+			health: Health{Present: true, HasRun: true, Runs: 5},
+			prior:  &priorUnchanged,
+			want:   Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState: RunnerState{
+				Runs: 5, RunsChangedAt: now, FirstSeenAt: old,
+			},
+		},
+		{
+			name:        "fresh activity source",
+			runner:      cadencedRunner,
+			health:      Health{Present: true, HasRun: true, Runs: 4},
+			prior:       &priorUnchanged,
+			activityAge: durationPointer(time.Minute),
+			want:        Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState:   priorUnchanged,
+		},
+		{
+			name:        "old activity source",
+			runner:      cadencedRunner,
+			health:      Health{Present: true, HasRun: true, Runs: 4},
+			prior:       &priorUnchanged,
+			activityAge: durationPointer(3 * time.Hour),
+			want:        Classification{Runner: "runner", Kind: FailureStale},
+			wantState:   priorUnchanged,
+		},
+		{
+			name:        "missing activity source on first sight",
+			runner:      cadencedRunner,
+			health:      Health{Present: true, HasRun: true, Runs: 4},
+			missingFile: true,
+			want:        Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState:   RunnerState{Runs: 4, RunsChangedAt: now, FirstSeenAt: now},
+		},
+		{
+			name:        "missing activity source uses first seen baseline",
+			runner:      cadencedRunner,
+			health:      Health{Present: true, HasRun: true, Runs: 4},
+			prior:       &priorUnchanged,
+			missingFile: true,
+			want:        Classification{Runner: "runner", Kind: FailureStale},
+			wantState:   priorUnchanged,
+		},
+		{
+			name:   "missing activity source remains fresh within first seen baseline",
+			runner: cadencedRunner,
+			health: Health{Present: true, HasRun: true, Runs: 4},
+			prior: &RunnerState{
+				Runs: 4, RunsChangedAt: old, FirstSeenAt: now.Add(-time.Hour),
+			},
+			missingFile: true,
+			want:        Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState: RunnerState{
+				Runs: 4, RunsChangedAt: old, FirstSeenAt: now.Add(-time.Hour),
+			},
+		},
+		{
+			name: "no cadence never becomes stale",
+			runner: Runner{
+				Name: "runner", Type: RunnerTypeLaunchd, Label: "com.example.runner",
+			},
+			health:    Health{Present: true, HasRun: true, Runs: 4},
+			prior:     &priorUnchanged,
+			want:      Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState: priorUnchanged,
+		},
+		{
+			name:   "exact stale boundary is healthy",
+			runner: cadencedRunner,
+			health: Health{Present: true, HasRun: true, Runs: 4},
+			prior: &RunnerState{
+				Runs: 4, RunsChangedAt: now.Add(-2 * time.Hour), FirstSeenAt: old,
+			},
+			want: Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState: RunnerState{
+				Runs: 4, RunsChangedAt: now.Add(-2 * time.Hour), FirstSeenAt: old,
+			},
+		},
+		{
+			name:   "one instant past stale boundary",
+			runner: cadencedRunner,
+			health: Health{Present: true, HasRun: true, Runs: 4},
+			prior: &RunnerState{
+				Runs: 4, RunsChangedAt: now.Add(-2*time.Hour - time.Nanosecond), FirstSeenAt: old,
+			},
+			want: Classification{Runner: "runner", Kind: FailureStale},
+			wantState: RunnerState{
+				Runs: 4, RunsChangedAt: now.Add(-2*time.Hour - time.Nanosecond), FirstSeenAt: old,
+			},
+		},
+		{
+			name:      "nonzero exit precedes stale",
+			runner:    cadencedRunner,
+			health:    Health{Present: true, HasRun: true, LastExitStatus: 2, Runs: 4},
+			prior:     &priorUnchanged,
+			want:      Classification{Runner: "runner", Kind: FailureNonzeroExit},
+			wantState: priorUnchanged,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runner := tt.runner
+			if tt.activityAge != nil {
+				runner.ActivitySource = filepath.Join(t.TempDir(), "activity")
+				if err := os.WriteFile(runner.ActivitySource, []byte("activity"), 0o600); err != nil {
+					t.Fatalf("WriteFile(activity source) error = %v", err)
+				}
+				mtime := now.Add(-*tt.activityAge)
+				if err := os.Chtimes(runner.ActivitySource, mtime, mtime); err != nil {
+					t.Fatalf("Chtimes(activity source) error = %v", err)
+				}
+			} else if tt.missingFile {
+				runner.ActivitySource = filepath.Join(t.TempDir(), "missing-activity")
+			}
+
+			fake := &FakeReader{HealthByRunner: map[string]Health{runner.Name: tt.health}}
+			got, gotState, err := CheckRunner(context.Background(), fake, runner, tt.prior, now)
+			if err != nil {
+				t.Fatalf("CheckRunner() error = %v", err)
+			}
+			if got == nil {
+				t.Fatal("CheckRunner() classification = nil, want non-nil")
+			}
+			if *got != tt.want {
+				t.Errorf("CheckRunner() classification = %#v, want %#v", *got, tt.want)
+			}
+			if gotState != tt.wantState {
+				t.Errorf("CheckRunner() state = %#v, want %#v", gotState, tt.wantState)
+			}
+			if gotReads := fake.Reads(); !reflect.DeepEqual(gotReads, []Runner{runner}) {
+				t.Errorf("FakeReader.Reads() = %#v, want %#v", gotReads, []Runner{runner})
+			}
+		})
+	}
+}
+
+func TestFailureKindDurableValues(t *testing.T) {
+	t.Parallel()
+
+	got := []FailureKind{FailureHealthy, FailureNotLoaded, FailureNonzeroExit, FailureStale}
+	want := []FailureKind{"healthy", "not_loaded", "nonzero_exit", "stale"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("failure kinds = %#v, want %#v", got, want)
+	}
+}
+
+func TestCheckRunnerReaderErrorReturnsNoClassification(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("launchctl unavailable")
+	runner := Runner{Name: "runner", Type: RunnerTypeLaunchd, Label: "com.example.runner"}
+	fake := &FakeReader{ErrorsByRunner: map[string]error{runner.Name: wantErr}}
+
+	got, gotState, err := CheckRunner(context.Background(), fake, runner, nil, time.Now())
+	if !errors.Is(err, wantErr) {
+		t.Errorf("CheckRunner() error = %v, want error wrapping %v", err, wantErr)
+	}
+	if got != nil {
+		t.Errorf("CheckRunner() classification = %#v, want nil", got)
+	}
+	if gotState != (RunnerState{}) {
+		t.Errorf("CheckRunner() state = %#v, want zero value", gotState)
+	}
+}
+
+func durationPointer(duration time.Duration) *time.Duration {
+	return &duration
+}
