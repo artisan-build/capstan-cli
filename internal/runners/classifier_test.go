@@ -60,6 +60,31 @@ func TestCheckRunnerClassifiesHealthAndUpdatesState(t *testing.T) {
 			wantState: priorUnchanged,
 		},
 		{
+			// A negative status is a signal termination, not an exit code. It is a genuine
+			// failure and must classify as nonzero_exit -- "status != 0" must not narrow to
+			// "status > 0".
+			name:      "negative status from signal termination",
+			runner:    Runner{Name: "runner", Type: RunnerTypeLaunchd, Label: "com.example.runner"},
+			health:    Health{Present: true, HasRun: true, LastExitStatus: -9, Runs: 4},
+			prior:     &priorUnchanged,
+			want:      Classification{Runner: "runner", Kind: FailureNonzeroExit},
+			wantState: priorUnchanged,
+		},
+		{
+			// The same negative status accompanied by the jetsam idle-exit reason is the
+			// NORMAL lifecycle of an on-demand agent and stays healthy: the reason decides,
+			// not the sign of the status.
+			name:   "negative status with jetsam idle exit reason stays healthy",
+			runner: Runner{Name: "runner", Type: RunnerTypeLaunchd, Label: "com.example.runner"},
+			health: Health{
+				Present: true, HasRun: true, LastExitStatus: -9,
+				ExitReason: "JETSAM_REASON_MEMORY_IDLE_EXIT", Runs: 4,
+			},
+			prior:     &priorUnchanged,
+			want:      Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState: priorUnchanged,
+		},
+		{
 			name:   "jetsam idle exit",
 			runner: Runner{Name: "runner", Type: RunnerTypeLaunchd, Label: "com.example.runner"},
 			health: Health{

@@ -28,6 +28,18 @@ func TestParseLaunchctlPrintFixtures(t *testing.T) {
 			want: Health{Present: true, HasRun: true, Runs: 1},
 		},
 		{
+			// A negative "last exit code" is a wait status: the job was terminated by
+			// signal -LastExitStatus, which is a failure and must not be read as an exit code.
+			name: "negative status from signal termination",
+			file: "launchctl-signal-negative-status.txt",
+			want: Health{
+				Present:        true,
+				HasRun:         true,
+				LastExitStatus: -9,
+				Runs:           12,
+			},
+		},
+		{
 			name: "nonzero exit",
 			file: "launchctl-exit-nonzero.txt",
 			want: Health{

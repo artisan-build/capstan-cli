@@ -201,3 +201,68 @@ func TestStateStoreIgnoresExtraFields(t *testing.T) {
 		t.Errorf("Load() = %#v, want %#v", got, want)
 	}
 }
+
+// TestStateStoreSaveReplacesRatherThanTruncates pins ATOMICITY specifically, which
+// TestStateStoreAtomicWriteAndPermissions does not: a plain os.WriteFile satisfies that
+// test's "no stray files" and "mode 0600" assertions.
+//
+// A failed Save must leave the previous state byte-for-byte intact. os.WriteFile would
+// truncate the existing file in place and lose it; temp-file-plus-rename cannot, because
+// the original is only ever replaced by a completed file.
+func TestStateStoreSaveReplacesRatherThanTruncates(t *testing.T) {
+	t.Parallel()
+
+	if os.Geteuid() == 0 {
+		// root writes into a 0500 directory regardless of the mode bits, so the Save below
+		// would succeed and this test could not fail. Skip rather than assert nothing.
+		t.Skip("root ignores directory permission bits, so Save cannot be made to fail")
+	}
+
+	dir := t.TempDir()
+	store := NewStateStore(dir)
+
+	original := State{Runners: map[string]RunnerState{
+		"runner": {Runs: 41, RunsChangedAt: time.Unix(1700000000, 0).UTC(), FirstSeenAt: time.Unix(1600000000, 0).UTC()},
+	}}
+	if err := store.Save(original); err != nil {
+		t.Fatalf("seed Save() error = %v", err)
+	}
+
+	before, err := os.ReadFile(filepath.Join(dir, "runners.json"))
+	if err != nil {
+		t.Fatalf("read seeded state: %v", err)
+	}
+
+	// Make the directory unwritable so the replace cannot complete.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	updated := State{Runners: map[string]RunnerState{
+		"runner": {Runs: 99, RunsChangedAt: time.Unix(1800000000, 0).UTC(), FirstSeenAt: time.Unix(1600000000, 0).UTC()},
+	}}
+	if err := store.Save(updated); err == nil {
+		t.Fatal("Save() into an unwritable directory returned nil error, want failure")
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("restore directory mode: %v", err)
+	}
+
+	after, err := os.ReadFile(filepath.Join(dir, "runners.json"))
+	if err != nil {
+		t.Fatalf("read state after failed Save: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("failed Save() modified existing state\n got: %s\nwant: %s", after, before)
+	}
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() after failed Save error = %v", err)
+	}
+	if got := loaded.Runners["runner"].Runs; got != 41 {
+		t.Errorf("Runs after failed Save = %d, want 41 (previous state must survive)", got)
+	}
+}
