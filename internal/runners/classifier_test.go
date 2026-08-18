@@ -103,11 +103,11 @@ func TestCheckRunnerClassifiesHealthAndUpdatesState(t *testing.T) {
 			wantState: RunnerState{Runs: 4, RunsChangedAt: now, FirstSeenAt: now},
 		},
 		{
-			name:      "not loaded cold start seeds only first seen",
+			name:      "not loaded cold start seeds freshness baseline",
 			runner:    cadencedRunner,
 			health:    Health{Present: false},
 			want:      Classification{Runner: "runner", Kind: FailureNotLoaded},
-			wantState: RunnerState{FirstSeenAt: now},
+			wantState: RunnerState{RunsChangedAt: now, FirstSeenAt: now},
 		},
 		{
 			name:        "cold start ignores old activity source",
@@ -124,6 +124,18 @@ func TestCheckRunnerClassifiesHealthAndUpdatesState(t *testing.T) {
 			prior:     &priorUnchanged,
 			want:      Classification{Runner: "runner", Kind: FailureStale},
 			wantState: priorUnchanged,
+		},
+		{
+			name:   "zero runs changed falls back to first seen",
+			runner: cadencedRunner,
+			health: Health{Present: true, Runs: 0},
+			prior: &RunnerState{
+				Runs: 0, FirstSeenAt: now.Add(-time.Minute),
+			},
+			want: Classification{Runner: "runner", Kind: FailureHealthy},
+			wantState: RunnerState{
+				Runs: 0, FirstSeenAt: now.Add(-time.Minute),
+			},
 		},
 		{
 			name:   "incremented runs refresh baseline",
@@ -263,6 +275,56 @@ func TestCheckRunnerClassifiesHealthAndUpdatesState(t *testing.T) {
 				t.Errorf("FakeReader.Reads() = %#v, want %#v", gotReads, []Runner{runner})
 			}
 		})
+	}
+}
+
+func TestCheckRunnerAbsentThenLoadedWithoutRunsIsHealthy(t *testing.T) {
+	t.Parallel()
+
+	firstCheck := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	runner := Runner{
+		Name:               "runner",
+		Type:               RunnerTypeLaunchd,
+		Label:              "com.example.runner",
+		ExpectedCadence:    time.Hour,
+		StalenessThreshold: time.Hour,
+	}
+	fake := &FakeReader{HealthByRunner: map[string]Health{
+		runner.Name: {Present: false},
+	}}
+
+	firstClassification, firstState, err := CheckRunner(
+		context.Background(), fake, runner, nil, firstCheck,
+	)
+	if err != nil {
+		t.Fatalf("first CheckRunner() error = %v", err)
+	}
+	wantFirstClassification := Classification{Runner: runner.Name, Kind: FailureNotLoaded}
+	if firstClassification == nil || *firstClassification != wantFirstClassification {
+		t.Errorf("first classification = %#v, want %#v", firstClassification, wantFirstClassification)
+	}
+	wantState := RunnerState{RunsChangedAt: firstCheck, FirstSeenAt: firstCheck}
+	if firstState != wantState {
+		t.Errorf("first state = %#v, want %#v", firstState, wantState)
+	}
+
+	fake.HealthByRunner[runner.Name] = Health{Present: true, Runs: 0}
+	secondClassification, secondState, err := CheckRunner(
+		context.Background(), fake, runner, &firstState, firstCheck.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("second CheckRunner() error = %v", err)
+	}
+	wantSecondClassification := Classification{Runner: runner.Name, Kind: FailureHealthy}
+	if secondClassification == nil || *secondClassification != wantSecondClassification {
+		t.Errorf("second classification = %#v, want %#v", secondClassification, wantSecondClassification)
+	}
+	if secondState != wantState {
+		t.Errorf("second state = %#v, want %#v", secondState, wantState)
+	}
+	wantReads := []Runner{runner, runner}
+	if gotReads := fake.Reads(); !reflect.DeepEqual(gotReads, wantReads) {
+		t.Errorf("FakeReader.Reads() = %#v, want %#v", gotReads, wantReads)
 	}
 }
 

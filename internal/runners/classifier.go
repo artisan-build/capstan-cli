@@ -59,7 +59,7 @@ func Classify(
 	if !health.Present {
 		classification.Kind = FailureNotLoaded
 		if prior == nil {
-			return classification, RunnerState{FirstSeenAt: now}, nil
+			return classification, RunnerState{RunsChangedAt: now, FirstSeenAt: now}, nil
 		}
 
 		return classification, *prior, nil
@@ -114,6 +114,9 @@ func isStale(runner Runner, state RunnerState, coldStart bool, now time.Time) (b
 	}
 
 	baseline := state.RunsChangedAt
+	if baseline.IsZero() {
+		baseline = state.FirstSeenAt
+	}
 	if runner.ActivitySource != "" {
 		info, err := os.Stat(runner.ActivitySource)
 		if err == nil {
