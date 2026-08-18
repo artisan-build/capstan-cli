@@ -1,0 +1,53 @@
+gui/UID/com.apple.syncservices.uihandler = {
+	active count = 0
+	path = /System/Library/LaunchAgents/com.apple.syncservices.uihandler.plist
+	type = LaunchAgent
+	state = not running
+
+	program = /System/Library/PrivateFrameworks/SyncServicesUI.framework/Versions/Current/Resources/syncuid.app/Contents/MacOS/syncuid
+	working directory = /tmp
+
+	inherited environment = {
+		SSH_AUTH_SOCK => /var/run/com.apple.launchd.REDACTED/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		MallocSpaceEfficient => 1
+		XPC_SERVICE_NAME => com.apple.syncservices.uihandler
+	}
+
+	domain = gui/UID [REDACTED]
+	asid = REDACTED
+	minimum runtime = 10
+	base minimum runtime = 10
+	exit timeout = 5
+	runs = 0
+	last exit code = (never exited)
+
+	endpoints = {
+		"com.apple.syncservices.uihandler" = {
+			port = 0x0
+			active = 0
+			managed = 1
+			reset = 1
+			hide = 0
+			watching = 1
+		}
+	}
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active, soft) = 50 MB
+	jetsam memory limit (inactive, soft) = 50 MB
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+	exponential throttling grace limit = 10
+
+	properties = system service | exponential throttling | tle system
+}

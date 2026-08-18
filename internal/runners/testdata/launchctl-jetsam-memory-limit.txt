@@ -1,0 +1,151 @@
+gui/UID/com.apple.knowledgeconstructiond = {
+	active count = 0
+	path = /System/Library/LaunchAgents/com.apple.knowledgeconstructiond.plist
+	type = LaunchAgent
+	state = not running
+
+	program = /System/Library/PrivateFrameworks/IntelligencePlatformCore.framework/Versions/A/knowledgeconstructiond
+	arguments = {
+		/System/Library/PrivateFrameworks/IntelligencePlatformCore.framework/Versions/A/knowledgeconstructiond
+	}
+
+	inherited environment = {
+		SSH_AUTH_SOCK => /var/run/com.apple.launchd.REDACTED/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		MallocSpaceEfficient => 1
+		XPC_SERVICE_NAME => com.apple.knowledgeconstructiond
+	}
+
+	domain = gui/UID [REDACTED]
+	asid = REDACTED
+	minimum runtime = 10
+	base minimum runtime = 10
+	exit timeout = 5
+	runs = 69
+	last exit reason = JETSAM_REASON_MEMORY_PERPROCESSLIMIT
+	last jetsam exit details = JETSAM_REASON_MEMORY_PERPROCESSLIMIT
+
+	event triggers = {
+		com.apple.intelligenceplatform.IntelligencePlatformCore.FullPipeline => {
+			keepalive = 0
+			service = com.apple.knowledgeconstructiond
+			stream = com.apple.bg.system.task
+			monitor = com.apple.dasd
+			descriptor = {
+				"PowerNap" => true
+				"GroupConcurrencyLimit" => 1
+				"RepeatingTask" => {
+					"Interval" => 86400
+				}
+				"RequiresExternalPower" => true
+				"ResourceIntensive" => true
+				"GroupName" => "com.apple.intelligenceplatform.IntelligencePlatformCore"
+				"Priority" => "Maintenance"
+			}
+		}
+		com.apple.intelligenceplatform.IntelligencePlatformCore.AutonamingMessagesPipeline => {
+			keepalive = 0
+			service = com.apple.knowledgeconstructiond
+			stream = com.apple.xpc.activity
+			monitor = com.apple.UserEventAgent-Aqua
+			descriptor = {
+				"MaxConcurrencyLimit" => 1
+				"Repeating" => true
+				"CPUIntensive" => true
+				"Interval" => 86400
+				"PowerNap" => true
+				"AllowBattery" => false
+				"ActivityGroupName" => "com.apple.intelligenceplatform.IntelligencePlatformCore"
+				"Priority" => "Maintenance"
+			}
+		}
+	}
+
+	endpoints = {
+		"com.apple.intelligenceplatform.KnowledgeConstruction" = {
+			port = 0xea8f7
+			active = 0
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 1
+		}
+	}
+
+	event channels = {
+		"com.apple.locationd-events" = {
+			port = 0x103623
+			active = 0
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 1
+		}
+		"com.apple.distnoted.matching" = {
+			port = 0xc1e93
+			active = 0
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 1
+		}
+		"com.apple.notifyd.matching" = {
+			port = 0x12883f
+			active = 0
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 1
+		}
+		"com.apple.bg.system.task" = {
+			port = 0x103193
+			active = 0
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 1
+		}
+		"com.apple.xpc.activity" = {
+			port = 0x126833
+			active = 0
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 1
+		}
+	}
+
+	resource coalition = {
+		ID = REDACTED
+		type = resource
+		state = active
+		active count = 1
+		name = com.apple.knowledgeconstructiond
+	}
+
+	jetsam coalition = {
+		ID = REDACTED
+		type = jetsam
+		state = active
+		active count = 1
+		name = com.apple.knowledgeconstructiond
+	}
+
+	spawn type = adaptive (6)
+	jetsam priority = 40
+	jetsam memory limit (active, soft) = 50 MB
+	jetsam memory limit (inactive, hard) = 15 MB
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+	exponential throttling grace limit = 10
+
+	properties = supports transactions | supports pressured exit | inferred program | system service | exponential throttling | tle system
+}

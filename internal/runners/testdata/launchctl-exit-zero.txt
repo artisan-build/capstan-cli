@@ -1,0 +1,74 @@
+gui/UID/io.tailscale.ipn.macsys.login-item-helper = {
+	active count = 0
+	path = (submitted by smd.REDACTED)
+	type = Submitted
+	managed_by = com.apple.xpc.ServiceManagement
+	state = not running
+
+	program identifier = io.tailscale.ipn.macsys.login-item-helper (mode: 1)
+	parent bundle identifier = io.tailscale.ipn.macsys
+	parent bundle version = 101.98.5
+	BTM uuid = REDACTED
+	inherited environment = {
+		SSH_AUTH_SOCK => /var/run/com.apple.launchd.REDACTED/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		XPC_SERVICE_NAME => io.tailscale.ipn.macsys.login-item-helper
+	}
+
+	domain = gui/UID [REDACTED]
+	asid = REDACTED
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	last exit code = 0
+
+	semaphores = {
+		successful exit => 0
+	}
+
+	endpoints = {
+		"io.tailscale.ipn.macsys.login-item-helper" = {
+			port = 0xd6103
+			active = 0
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 1
+		}
+	}
+
+	resource coalition = {
+		ID = REDACTED
+		type = resource
+		state = active
+		active count = 1
+		name = io.tailscale.ipn.macsys.login-item-helper
+	}
+
+	jetsam coalition = {
+		ID = REDACTED
+		type = jetsam
+		state = active
+		active count = 1
+		name = io.tailscale.ipn.macsys.login-item-helper
+	}
+
+	spawn type = interactive (4)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	submitted job. ignore execute allowed
+	jetsam thread limit = 32
+	cpumon = default
+	job state = exited
+
+	properties = supports transactions | resolve program | has LWCR
+}

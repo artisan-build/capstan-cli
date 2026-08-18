@@ -1,0 +1,32 @@
+com.example.signalled = {
+	active count = 0
+	path = /Users/example/Library/LaunchAgents/com.example.signalled.plist
+	state = not running
+
+	program = /usr/local/bin/example-runner
+	arguments = {
+		/usr/local/bin/example-runner
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		XPC_SERVICE_NAME => com.example.signalled
+	}
+
+	domain = gui/501 [100016]
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 12
+	last exit code = -9
+
+	event triggers = {
+	}
+
+	endpoints = {
+	}
+
+	properties = partial import | keepalive
+}
