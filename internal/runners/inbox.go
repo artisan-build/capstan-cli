@@ -1,6 +1,7 @@
 package runners
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -32,16 +33,31 @@ type InboxWriter struct {
 }
 
 type inboxFrontmatter struct {
-	Fingerprint string        `yaml:"fingerprint"`
-	Runner      string        `yaml:"runner"`
-	FailureKind FailureKind   `yaml:"failure_kind"`
-	Status      string        `yaml:"status"`
-	Assignee    string        `yaml:"assignee"`
-	FirstSeen   string        `yaml:"first_seen"`
-	LastSeen    string        `yaml:"last_seen"`
-	Count       int           `yaml:"count"`
-	ResolvedAt  string        `yaml:"resolved_at"`
-	Evidence    inboxEvidence `yaml:"evidence"`
+	Fingerprint string         `yaml:"fingerprint"`
+	Runner      string         `yaml:"runner"`
+	FailureKind FailureKind    `yaml:"failure_kind"`
+	Status      string         `yaml:"status"`
+	Assignee    string         `yaml:"assignee"`
+	FirstSeen   string         `yaml:"first_seen"`
+	LastSeen    string         `yaml:"last_seen"`
+	Count       int            `yaml:"count"`
+	ResolvedAt  string         `yaml:"resolved_at"`
+	Evidence    inboxEvidence  `yaml:"evidence"`
+	Extra       map[string]any `yaml:",inline"`
+}
+
+type rawInboxFrontmatter struct {
+	Fingerprint string         `yaml:"fingerprint"`
+	Runner      string         `yaml:"runner"`
+	FailureKind FailureKind    `yaml:"failure_kind"`
+	Status      string         `yaml:"status"`
+	Assignee    string         `yaml:"assignee"`
+	FirstSeen   string         `yaml:"first_seen"`
+	LastSeen    string         `yaml:"last_seen"`
+	Count       any            `yaml:"count"`
+	ResolvedAt  string         `yaml:"resolved_at"`
+	Evidence    inboxEvidence  `yaml:"evidence"`
+	Extra       map[string]any `yaml:",inline"`
 }
 
 type inboxEvidence struct {
@@ -88,29 +104,35 @@ func (w *InboxWriter) Reconcile(
 	if err := validateInboxRunnerName(runner.Name); err != nil {
 		return nil, err
 	}
+	if err := removeTemporaryFiles(w.dir, ".capstan-inbox-*"); err != nil {
+		return nil, fmt.Errorf("clean stale inbox files: %w", err)
+	}
 
 	changes := make([]InboxChange, 0, 2)
+	var reconcileErrors []error
 	for _, kind := range inboxFailureKinds {
 		if classification.Kind == kind {
-			change, err := w.upsert(runner, kind, health, state, now)
-			if err != nil {
-				return nil, err
+			change, changed, err := w.upsert(runner, kind, health, state, now)
+			if changed {
+				changes = append(changes, change)
 			}
-			changes = append(changes, change)
+			if err != nil {
+				reconcileErrors = append(reconcileErrors, err)
+			}
 
 			continue
 		}
 
 		change, changed, err := w.resolve(runner, kind, now)
 		if err != nil {
-			return nil, err
+			reconcileErrors = append(reconcileErrors, err)
 		}
 		if changed {
 			changes = append(changes, change)
 		}
 	}
 
-	return changes, nil
+	return changes, errors.Join(reconcileErrors...)
 }
 
 func (w *InboxWriter) upsert(
@@ -119,16 +141,16 @@ func (w *InboxWriter) upsert(
 	health Health,
 	state RunnerState,
 	now time.Time,
-) (InboxChange, error) {
+) (InboxChange, bool, error) {
 	fingerprint := Fingerprint(runner.Name, kind)
 	path, filename, err := w.itemPath(runner.Name, kind, fingerprint)
 	if err != nil {
-		return InboxChange{}, err
+		return InboxChange{}, false, err
 	}
 
 	evidence, err := buildInboxEvidence(runner, kind, health, state)
 	if err != nil {
-		return InboxChange{}, err
+		return InboxChange{}, false, err
 	}
 	nowText := now.UTC().Format(time.RFC3339)
 	frontmatter := inboxFrontmatter{
@@ -145,21 +167,27 @@ func (w *InboxWriter) upsert(
 	action := "written"
 
 	data, err := os.ReadFile(path)
+	var itemWarnings []error
 	if err == nil {
-		existing, existingBody, parseErr := parseInboxFile(data)
+		existing, existingBody, warnings, parseErr := parseInboxFile(data)
 		if parseErr != nil {
-			return InboxChange{}, fmt.Errorf("parse inbox item %q: %w", path, parseErr)
+			return InboxChange{}, false, fmt.Errorf("parse inbox item %q; leaving it unchanged: %w", path, parseErr)
+		}
+		for _, warning := range warnings {
+			itemWarnings = append(itemWarnings, fmt.Errorf("parse inbox item %q: %w", path, warning))
 		}
 		if existing.Fingerprint != fingerprint || existing.Runner != runner.Name || existing.FailureKind != kind {
-			return InboxChange{}, fmt.Errorf("inbox item %q has identity that does not match its filename", path)
+			return InboxChange{}, false, fmt.Errorf("inbox item %q has identity that does not match its filename; leaving it unchanged", path)
 		}
+		existing.Status = strings.ToLower(strings.TrimSpace(existing.Status))
 		if existing.Status != inboxStatusOpen && existing.Status != inboxStatusResolved {
-			return InboxChange{}, fmt.Errorf("inbox item %q has invalid status %q", path, existing.Status)
+			return InboxChange{}, false, fmt.Errorf("inbox item %q has invalid status %q; leaving it unchanged", path, existing.Status)
 		}
 
 		frontmatter.Assignee = existing.Assignee
 		frontmatter.FirstSeen = existing.FirstSeen
 		frontmatter.Count = existing.Count + 1
+		frontmatter.Extra = existing.Extra
 		body = existingBody
 		if existing.Status == inboxStatusResolved {
 			action = "reopened"
@@ -167,14 +195,14 @@ func (w *InboxWriter) upsert(
 			action = "updated"
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return InboxChange{}, fmt.Errorf("read inbox item %q: %w", path, err)
+		return InboxChange{}, false, fmt.Errorf("read inbox item %q: %w", path, err)
 	}
 
 	if err := writeInboxFile(w.dir, path, frontmatter, body); err != nil {
-		return InboxChange{}, err
+		return InboxChange{}, false, err
 	}
 
-	return InboxChange{Action: action, Filename: filename}, nil
+	return InboxChange{Action: action, Filename: filename}, true, errors.Join(itemWarnings...)
 }
 
 func (w *InboxWriter) resolve(runner Runner, kind FailureKind, now time.Time) (InboxChange, bool, error) {
@@ -192,18 +220,23 @@ func (w *InboxWriter) resolve(runner Runner, kind FailureKind, now time.Time) (I
 		return InboxChange{}, false, fmt.Errorf("read inbox item %q: %w", path, err)
 	}
 
-	frontmatter, body, err := parseInboxFile(data)
+	frontmatter, body, warnings, err := parseInboxFile(data)
 	if err != nil {
-		return InboxChange{}, false, fmt.Errorf("parse inbox item %q: %w", path, err)
+		return InboxChange{}, false, fmt.Errorf("parse inbox item %q; leaving it unchanged: %w", path, err)
+	}
+	var itemWarnings []error
+	for _, warning := range warnings {
+		itemWarnings = append(itemWarnings, fmt.Errorf("parse inbox item %q: %w", path, warning))
 	}
 	if frontmatter.Fingerprint != fingerprint || frontmatter.Runner != runner.Name || frontmatter.FailureKind != kind {
-		return InboxChange{}, false, fmt.Errorf("inbox item %q has identity that does not match its filename", path)
+		return InboxChange{}, false, fmt.Errorf("inbox item %q has identity that does not match its filename; leaving it unchanged", path)
 	}
+	frontmatter.Status = strings.ToLower(strings.TrimSpace(frontmatter.Status))
 	if frontmatter.Status == inboxStatusResolved {
-		return InboxChange{}, false, nil
+		return InboxChange{}, false, errors.Join(itemWarnings...)
 	}
 	if frontmatter.Status != inboxStatusOpen {
-		return InboxChange{}, false, fmt.Errorf("inbox item %q has invalid status %q", path, frontmatter.Status)
+		return InboxChange{}, false, fmt.Errorf("inbox item %q has invalid status %q; leaving it unchanged", path, frontmatter.Status)
 	}
 
 	frontmatter.Status = inboxStatusResolved
@@ -212,7 +245,7 @@ func (w *InboxWriter) resolve(runner Runner, kind FailureKind, now time.Time) (I
 		return InboxChange{}, false, err
 	}
 
-	return InboxChange{Action: "resolved", Filename: filename}, true, nil
+	return InboxChange{Action: "resolved", Filename: filename}, true, errors.Join(itemWarnings...)
 }
 
 func buildInboxEvidence(runner Runner, kind FailureKind, health Health, state RunnerState) (inboxEvidence, error) {
@@ -288,7 +321,7 @@ func newInboxBody(runner Runner, kind FailureKind, evidence inboxEvidence) strin
 		description = "The runner has not shown real activity within its expected cadence and staleness threshold."
 	}
 
-	return fmt.Sprintf("\n# %s\n\n%s\n\n## Evidence\n%s", title, description, readableEvidence(evidence))
+	return fmt.Sprintf("\n# %s\n\n%s\n\n## Evidence (first observed)\n%s", title, description, readableEvidence(evidence))
 }
 
 func readableEvidence(evidence inboxEvidence) string {
@@ -334,25 +367,103 @@ func readableEvidence(evidence inboxEvidence) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func parseInboxFile(data []byte) (inboxFrontmatter, string, error) {
-	const opening = "---\n"
-	const closing = "\n---\n"
-	if !strings.HasPrefix(string(data), opening) {
-		return inboxFrontmatter{}, "", errors.New("missing YAML frontmatter opening delimiter")
+func parseInboxFile(data []byte) (inboxFrontmatter, string, []error, error) {
+	frontmatterData, body, err := splitInboxFile(data)
+	if err != nil {
+		return inboxFrontmatter{}, "", nil, err
 	}
 
-	end := strings.Index(string(data[len(opening):]), closing)
-	if end < 0 {
-		return inboxFrontmatter{}, "", errors.New("missing YAML frontmatter closing delimiter")
-	}
-	frontmatterEnd := len(opening) + end
-
-	var frontmatter inboxFrontmatter
-	if err := yaml.Unmarshal(data[len(opening):frontmatterEnd], &frontmatter); err != nil {
-		return inboxFrontmatter{}, "", fmt.Errorf("decode YAML frontmatter: %w", err)
+	var raw rawInboxFrontmatter
+	if err := yaml.Unmarshal(normalizeFrontmatter(frontmatterData), &raw); err != nil {
+		return inboxFrontmatter{}, "", nil, fmt.Errorf("decode YAML frontmatter: %w", err)
 	}
 
-	return frontmatter, string(data[frontmatterEnd+len(closing):]), nil
+	count, warning := parseInboxCount(raw.Count)
+	frontmatter := inboxFrontmatter{
+		Fingerprint: raw.Fingerprint,
+		Runner:      raw.Runner,
+		FailureKind: raw.FailureKind,
+		Status:      raw.Status,
+		Assignee:    raw.Assignee,
+		FirstSeen:   raw.FirstSeen,
+		LastSeen:    raw.LastSeen,
+		Count:       count,
+		ResolvedAt:  raw.ResolvedAt,
+		Evidence:    raw.Evidence,
+		Extra:       raw.Extra,
+	}
+	if warning != nil {
+		return frontmatter, string(body), []error{warning}, nil
+	}
+
+	return frontmatter, string(body), nil, nil
+}
+
+func splitInboxFile(data []byte) ([]byte, []byte, error) {
+	lineEnd := bytes.IndexByte(data, '\n')
+	if lineEnd < 0 || string(bytes.TrimSuffix(data[:lineEnd], []byte{'\r'})) != "---" {
+		return nil, nil, errors.New("missing YAML frontmatter opening delimiter")
+	}
+
+	frontmatterStart := lineEnd + 1
+	lineStart := frontmatterStart
+	for lineStart <= len(data) {
+		relativeEnd := bytes.IndexByte(data[lineStart:], '\n')
+		lineStop := len(data)
+		bodyStart := len(data)
+		if relativeEnd >= 0 {
+			lineStop = lineStart + relativeEnd
+			bodyStart = lineStop + 1
+		}
+		line := bytes.TrimSuffix(data[lineStart:lineStop], []byte{'\r'})
+		if string(line) == "---" {
+			return data[frontmatterStart:lineStart], data[bodyStart:], nil
+		}
+		if relativeEnd < 0 {
+			break
+		}
+		lineStart = bodyStart
+	}
+
+	return nil, nil, errors.New("missing YAML frontmatter closing delimiter")
+}
+
+func normalizeFrontmatter(data []byte) []byte {
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		indentEnd := 0
+		var indent strings.Builder
+		for indentEnd < len(line) {
+			switch line[indentEnd] {
+			case ' ':
+				indent.WriteByte(' ')
+			case '\t':
+				indent.WriteString("    ")
+			default:
+				lines[i] = indent.String() + line[indentEnd:]
+
+				goto nextLine
+			}
+			indentEnd++
+		}
+		lines[i] = indent.String()
+	nextLine:
+	}
+
+	return []byte(strings.Join(lines, "\n"))
+}
+
+func parseInboxCount(value any) (int, error) {
+	switch count := value.(type) {
+	case int:
+		return count, nil
+	case int64:
+		return int(count), nil
+	case uint64:
+		return int(count), nil
+	default:
+		return 0, fmt.Errorf("count %q is not an integer; reset it to zero", fmt.Sprint(value))
+	}
 }
 
 func writeInboxFile(dir, path string, frontmatter inboxFrontmatter, body string) error {

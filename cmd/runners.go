@@ -82,10 +82,13 @@ func runRunnersCheck(
 	}
 	checkedAt := now().UTC()
 	observations := make([]runnerObservation, 0, len(config.Runners))
+	var checkErrors []error
 	for _, runner := range config.Runners {
 		health, err := reader.Read(command.Context(), runner)
 		if err != nil {
-			return fmt.Errorf("read health for runner %q: %w", runner.Name, err)
+			checkErrors = append(checkErrors, fmt.Errorf("read health for runner %q: %w", runner.Name, err))
+
+			continue
 		}
 
 		prior, found := state.Runners[runner.Name]
@@ -95,7 +98,9 @@ func runRunnersCheck(
 		}
 		classification, updated, err := runners.Classify(runner, health, priorPointer, checkedAt)
 		if err != nil {
-			return err
+			checkErrors = append(checkErrors, err)
+
+			continue
 		}
 		observations = append(observations, runnerObservation{
 			runner:         runner,
@@ -117,21 +122,25 @@ func runRunnersCheck(
 			checkedAt,
 		)
 		if err != nil {
-			return err
+			checkErrors = append(checkErrors, fmt.Errorf("reconcile inbox for runner %q: %w", observation.runner.Name, err))
 		}
-		summaries = append(summaries, formatRunnerSummary(observation.classification, changes))
+		if err == nil || len(changes) > 0 {
+			summaries = append(summaries, formatRunnerSummary(observation.classification, changes))
+		}
 	}
 
 	if err := store.Save(state); err != nil {
-		return err
+		checkErrors = append(checkErrors, err)
 	}
 	for _, summary := range summaries {
 		if _, err := fmt.Fprintln(command.OutOrStdout(), summary); err != nil {
-			return err
+			checkErrors = append(checkErrors, err)
+
+			break
 		}
 	}
 
-	return nil
+	return errors.Join(checkErrors...)
 }
 
 func loadRunnersConfig(path string) (runners.Config, error) {

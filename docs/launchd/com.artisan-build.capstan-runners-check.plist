@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/capstan</string>
+        <string>/opt/homebrew/bin/capstan</string>
         <string>runners</string>
         <string>check</string>
     </array>
@@ -17,5 +17,11 @@
 
     <key>RunAtLoad</key>
     <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/capstan-runners-check.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/capstan-runners-check.stderr.log</string>
 </dict>
 </plist>

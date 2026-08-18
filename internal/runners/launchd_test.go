@@ -116,7 +116,7 @@ func TestParseLaunchctlPrintRejectsMalformedOutput(t *testing.T) {
 	}
 }
 
-func TestLaunchdReaderUsesOnlyPrint(t *testing.T) {
+func TestLaunchdReaderUsesOnlyPrintAndNeverReadsStdout(t *testing.T) {
 	t.Parallel()
 
 	wantHealth := Health{Present: true, HasRun: true, LastExitStatus: 0, Runs: 42}

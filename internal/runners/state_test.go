@@ -2,6 +2,7 @@ package runners
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -28,8 +29,8 @@ func TestStateStoreLockAcquireReleaseAndContention(t *testing.T) {
 	if err := lock.Release(); err != nil {
 		t.Fatalf("Release() error = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, lockFilename)); !os.IsNotExist(err) {
-		t.Fatalf("lock remains after Release() or stat failed unexpectedly: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, lockFilename)); err != nil {
+		t.Fatalf("persistent lock file missing after Release(): %v", err)
 	}
 
 	second, err := store.AcquireLock()
@@ -38,6 +39,54 @@ func TestStateStoreLockAcquireReleaseAndContention(t *testing.T) {
 	}
 	if err := second.Release(); err != nil {
 		t.Fatalf("second Release() error = %v", err)
+	}
+}
+
+func TestStateStoreLockReleasedWhenHolderProcessExits(t *testing.T) {
+	if os.Getenv("CAPSTAN_FLOCK_CRASH_HELPER") == "1" {
+		lock, err := NewStateStore(os.Getenv("CAPSTAN_FLOCK_STATE_DIR")).AcquireLock()
+		if err != nil {
+			os.Exit(2)
+		}
+		_ = lock
+		os.Exit(0)
+	}
+
+	dir := t.TempDir()
+	command := exec.Command(os.Args[0], "-test.run=^TestStateStoreLockReleasedWhenHolderProcessExits$")
+	command.Env = append(os.Environ(),
+		"CAPSTAN_FLOCK_CRASH_HELPER=1",
+		"CAPSTAN_FLOCK_STATE_DIR="+dir,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("crashed lock holder failed: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, lockFilename)); err != nil {
+		t.Fatalf("crashed holder did not leave lock path: %v", err)
+	}
+
+	lock, err := NewStateStore(dir).AcquireLock()
+	if err != nil {
+		t.Fatalf("AcquireLock() after holder exit error = %v", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatalf("Release() after holder exit error = %v", err)
+	}
+}
+
+func TestStateStoreSaveSweepsInterruptedTemporaryFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	stale := filepath.Join(dir, ".runners-interrupted")
+	if err := os.WriteFile(stale, []byte("partial"), 0o600); err != nil {
+		t.Fatalf("write interrupted state file: %v", err)
+	}
+	if err := NewStateStore(dir).Save(emptyState()); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("interrupted state file remains or stat failed unexpectedly: %v", err)
 	}
 }
 

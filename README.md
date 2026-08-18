@@ -55,17 +55,22 @@ the YAML frontmatter so human notes in the Markdown body survive. Recovery resol
 file without deleting it, and recurrence reopens that same file. The check is strictly read-only:
 it never starts, stops, restarts, reloads, or modifies a configured runner.
 
+The Markdown evidence section records the first observation and is not regenerated, preserving any
+human edits byte-for-byte. The frontmatter `evidence` mapping carries the current observed values.
+
 ### Scheduling with launchd
 
 The sample [`docs/launchd/com.artisan-build.capstan-runners-check.plist`](docs/launchd/com.artisan-build.capstan-runners-check.plist)
 runs the check every five minutes using `StartInterval`. Before installing it, change
-`/usr/local/bin/capstan` to the absolute path of the installed binary if necessary. The command uses
-the default XDG config; add `--config` and an absolute config path to `ProgramArguments` if needed.
+`/opt/homebrew/bin/capstan` to the absolute path of the installed binary if necessary (Intel Homebrew
+typically uses `/usr/local/bin`). The command uses the default XDG config; add `--config` and an
+absolute config path to `ProgramArguments` if needed. The sample sends summaries and operational
+errors to `/tmp/capstan-runners-check.stdout.log` and `/tmp/capstan-runners-check.stderr.log`.
 
 Install the sample as a user LaunchAgent:
 
 ```sh
-mkdir -p "$HOME/Library/LaunchAgents"
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Herd/brain/inbox" "$HOME/.local/state/capstan"
 cp docs/launchd/com.artisan-build.capstan-runners-check.plist \
   "$HOME/Library/LaunchAgents/com.artisan-build.capstan-runners-check.plist"
 launchctl bootstrap "gui/$(id -u)" \

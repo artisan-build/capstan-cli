@@ -130,8 +130,15 @@ func TestRunnersCheckHealthyFromStartCreatesNoInboxFile(t *testing.T) {
 		t.Fatalf("stdout, stderr = %q, %q, want healthy summary and empty stderr", stdout, stderr)
 	}
 	assertCommandInboxEntries(t, inbox)
-	if _, err := os.Stat(filepath.Join(state, "runners.lock")); !os.IsNotExist(err) {
-		t.Fatalf("state lock remains after successful check or stat failed: %v", err)
+	if _, err := os.Stat(filepath.Join(state, "runners.lock")); err != nil {
+		t.Fatalf("persistent state lock path missing after successful check: %v", err)
+	}
+	lock, err := runners.NewStateStore(state).AcquireLock()
+	if err != nil {
+		t.Fatalf("state lock remained held after successful check: %v", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatalf("release post-check state lock: %v", err)
 	}
 }
 
@@ -173,45 +180,121 @@ func TestRunnersCheckDetectsSilentlyDeadRunnerFromPersistedState(t *testing.T) {
 		"run_count: 10",
 		"last_activity: \"2026-08-18T09:00:00Z\"",
 		"stale_after: \"2026-08-18T11:00:00Z\"",
-	}, []string{"stdout"})
+	}, nil)
 }
 
-func TestRunnersCheckReaderErrorWritesNothingAndReleasesLock(t *testing.T) {
+func TestRunnersCheckReaderErrorPreservesOtherRunnerStateAndFindings(t *testing.T) {
 	inbox := t.TempDir()
 	state := t.TempDir()
 	configPath := writeRunnersCommandConfig(t, inbox, state, []commandTestRunner{
-		{Name: "would-fail", Label: "test.would-fail"},
 		{Name: "reader-error", Label: "test.reader-error"},
+		{Name: "scheduled", Label: "test.scheduled", ExpectedCadence: "1h"},
 	})
 	readerErr := errors.New("launchctl transport unavailable")
 	fake := &runners.FakeReader{
 		HealthByRunner: map[string]runners.Health{
-			"would-fail": {Present: true, HasRun: true, LastExitStatus: 17, Runs: 3},
+			"scheduled": {Present: true, HasRun: true, Runs: 3},
 		},
 		ErrorsByRunner: map[string]error{"reader-error": readerErr},
 	}
+	checkedAt := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	now := func() time.Time { return checkedAt }
+
+	stdout, stderr, err := executeRunnersCommand(
+		[]string{"runners", "check", "--config", configPath},
+		fake,
+		now,
+	)
+	if !errors.Is(err, readerErr) {
+		t.Fatalf("runners check error = %v, want wrapped reader error", err)
+	}
+	if !strings.Contains(err.Error(), `read health for runner "reader-error"`) {
+		t.Fatalf("reader error = %q, want monitor context", err)
+	}
+	if stdout != "scheduled: healthy (no inbox change)\n" {
+		t.Fatalf("stdout = %q, want successful runner summary despite reader error", stdout)
+	}
+	if !strings.Contains(stderr, `read health for runner "reader-error"`) {
+		t.Fatalf("stderr = %q, want monitor error", stderr)
+	}
+	assertCommandInboxEntries(t, inbox)
+	loaded, err := runners.NewStateStore(state).Load()
+	if err != nil {
+		t.Fatalf("Load() after partial check error = %v", err)
+	}
+	wantState := runners.RunnerState{Runs: 3, RunsChangedAt: checkedAt, FirstSeenAt: checkedAt}
+	if got := loaded.Runners["scheduled"]; got != wantState {
+		t.Fatalf("saved scheduled state = %#v, want %#v", got, wantState)
+	}
+
+	checkedAt = checkedAt.Add(2*time.Hour + time.Second)
+	fingerprint := runners.Fingerprint("scheduled", runners.FailureStale)
+	filename := "scheduled-stale-" + fingerprint[:8] + ".md"
+	stdout, stderr, err = executeRunnersCommand([]string{"runners", "check", "--config", configPath}, fake, now)
+	if !errors.Is(err, readerErr) {
+		t.Fatalf("second runners check error = %v, want wrapped reader error", err)
+	}
+	if want := "scheduled: stale (written " + filename + ")\n"; stdout != want {
+		t.Fatalf("second stdout = %q, want %q", stdout, want)
+	}
+	if !strings.Contains(stderr, `read health for runner "reader-error"`) {
+		t.Fatalf("second stderr = %q, want monitor error", stderr)
+	}
+	assertCommandInboxEntries(t, inbox, filename)
+	wantReads := []runners.Runner{
+		{Name: "reader-error", Type: runners.RunnerTypeLaunchd, Label: "test.reader-error"},
+		{Name: "scheduled", Type: runners.RunnerTypeLaunchd, Label: "test.scheduled", ExpectedCadence: time.Hour, StalenessThreshold: time.Hour},
+		{Name: "reader-error", Type: runners.RunnerTypeLaunchd, Label: "test.reader-error"},
+		{Name: "scheduled", Type: runners.RunnerTypeLaunchd, Label: "test.scheduled", ExpectedCadence: time.Hour, StalenessThreshold: time.Hour},
+	}
+	if got := fake.Reads(); !reflect.DeepEqual(got, wantReads) {
+		t.Fatalf("FakeReader reads = %#v, want every runner on both checks %#v", got, wantReads)
+	}
+}
+
+func TestRunnersCheckIsolatesCorruptInboxItem(t *testing.T) {
+	inbox := t.TempDir()
+	state := t.TempDir()
+	configPath := writeRunnersCommandConfig(t, inbox, state, []commandTestRunner{
+		{Name: "aaa-corrupt", Label: "test.corrupt"},
+		{Name: "bbb-missing", Label: "test.missing"},
+	})
+	corruptFingerprint := runners.Fingerprint("aaa-corrupt", runners.FailureNonzeroExit)
+	corruptFilename := "aaa-corrupt-nonzero_exit-" + corruptFingerprint[:8] + ".md"
+	corruptPath := filepath.Join(inbox, corruptFilename)
+	corruptContents := []byte("---\nfingerprint: [unterminated\n---\nHuman notes must remain.\n")
+	if err := os.WriteFile(corruptPath, corruptContents, 0o600); err != nil {
+		t.Fatalf("write corrupt inbox item: %v", err)
+	}
+	fake := &runners.FakeReader{HealthByRunner: map[string]runners.Health{
+		"aaa-corrupt": {Present: true, HasRun: true, LastExitStatus: 17, Runs: 1},
+		"bbb-missing": {Present: false},
+	}}
 
 	stdout, stderr, err := executeRunnersCommand(
 		[]string{"runners", "check", "--config", configPath},
 		fake,
 		func() time.Time { return time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC) },
 	)
-	if !errors.Is(err, readerErr) {
-		t.Fatalf("runners check error = %v, want wrapped reader error", err)
+	if err == nil || !strings.Contains(err.Error(), "leaving it unchanged") {
+		t.Fatalf("runners check error = %v, want isolated corrupt-item error", err)
 	}
-	if !strings.Contains(err.Error(), `read health for runner "reader-error"`) || strings.Contains(err.Error(), "nonzero_exit") {
-		t.Fatalf("reader error = %q, want monitor context and no runner finding", err)
+	missingFingerprint := runners.Fingerprint("bbb-missing", runners.FailureNotLoaded)
+	missingFilename := "bbb-missing-not_loaded-" + missingFingerprint[:8] + ".md"
+	if want := "bbb-missing: not_loaded (written " + missingFilename + ")\n"; stdout != want {
+		t.Fatalf("stdout = %q, want unaffected runner summary %q", stdout, want)
 	}
-	if stdout != "" {
-		t.Fatalf("stdout = %q, want no summaries after operational failure", stdout)
+	if !strings.Contains(stderr, corruptFilename) || !strings.Contains(stderr, "leaving it unchanged") {
+		t.Fatalf("stderr = %q, want named corrupt-item error", stderr)
 	}
-	if !strings.Contains(stderr, `read health for runner "reader-error"`) || strings.Contains(stderr, "nonzero_exit") {
-		t.Fatalf("stderr = %q, want monitor error and no runner finding", stderr)
+	after, err := os.ReadFile(corruptPath)
+	if err != nil {
+		t.Fatalf("read corrupt item after check: %v", err)
 	}
-	assertCommandInboxEntries(t, inbox)
-	if _, err := os.Stat(filepath.Join(state, "runners.lock")); !os.IsNotExist(err) {
-		t.Fatalf("state lock remains after reader error or stat failed: %v", err)
+	if !bytes.Equal(after, corruptContents) {
+		t.Fatalf("corrupt item changed\n got: %q\nwant: %q", after, corruptContents)
 	}
+	assertCommandInboxEntries(t, inbox, corruptFilename, missingFilename)
 }
 
 func TestRunnersCheckContendedLockIsOperationalFailure(t *testing.T) {
@@ -245,6 +328,45 @@ func TestRunnersCheckContendedLockIsOperationalFailure(t *testing.T) {
 		t.Fatalf("FakeReader reads = %#v, want none while lock is held", got)
 	}
 	assertCommandInboxEntries(t, inbox)
+}
+
+func TestRunnerLaunchdDocumentationIsOperational(t *testing.T) {
+	t.Parallel()
+
+	plist, err := os.ReadFile(filepath.Join("..", "docs", "launchd", "com.artisan-build.capstan-runners-check.plist"))
+	if err != nil {
+		t.Fatalf("read sample plist: %v", err)
+	}
+	plistText := string(plist)
+	for _, want := range []string{
+		"/opt/homebrew/bin/capstan",
+		"<key>StandardOutPath</key>",
+		"/tmp/capstan-runners-check.stdout.log",
+		"<key>StandardErrorPath</key>",
+		"/tmp/capstan-runners-check.stderr.log",
+	} {
+		if !strings.Contains(plistText, want) {
+			t.Errorf("sample plist does not contain %q", want)
+		}
+	}
+	if strings.Contains(plistText, "/usr/local/bin/capstan") {
+		t.Error("sample plist still defaults to the Intel Homebrew path")
+	}
+
+	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	readmeText := string(readme)
+	for _, want := range []string{
+		`mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Herd/brain/inbox" "$HOME/.local/state/capstan"`,
+		"frontmatter `evidence` mapping carries the current observed values",
+		"/tmp/capstan-runners-check.stderr.log",
+	} {
+		if !strings.Contains(readmeText, want) {
+			t.Errorf("README does not contain %q", want)
+		}
+	}
 }
 
 type commandTestRunner struct {
