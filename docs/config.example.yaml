@@ -1,0 +1,33 @@
+# Runner health always comes from launchd plus fresh real activity, never from a stdout log.
+# Freshness uses activity_source mtime when configured, otherwise the change in launchd's runs counter.
+inbox:
+  # Required directory where later Capstan commands can write runner health items.
+  path: ~/Herd/brain/inbox
+state:
+  # Required writable directory reserved for remembering runs-counter observations between checks.
+  path: ~/.local/state/capstan
+
+runners:
+  # Required 1-64 character identifier: ASCII letters/digits, then letters/digits/dot/underscore/hyphen.
+  # Names are unique case-insensitively because they are also used in dedupe fingerprints and filenames.
+  - name: ballast-rescore
+    # Required runner mechanism; launchd is currently the only supported type.
+    type: launchd
+    # Required launchd service label; each configured runner must use a unique label.
+    label: build.artisan.ballast-rescore
+    # Optional expected interval; setting it makes this a periodic runner with staleness checks.
+    expected_cadence: 1h
+    # Optional freshness limit; requires expected_cadence and defaults to it when omitted.
+    staleness_threshold: 30m
+    # Optional real activity marker whose mtime overrides runs-counter freshness.
+    activity_source: ~/.ballast/last-run
+
+  # This transcript runner is on-demand: omitting expected_cadence disables staleness checks entirely.
+  # Its required name follows the same filesystem-safe rule described above.
+  - name: transcript-runner
+    # Required runner mechanism; launchd is currently the only supported type.
+    type: launchd
+    # Required unique launchd service label.
+    label: build.artisan.transcript-runner
+    # expected_cadence and staleness_threshold are intentionally omitted for this on-demand runner.
+    # activity_source is optional and omitted, so freshness uses launchd's monotonic runs counter.
