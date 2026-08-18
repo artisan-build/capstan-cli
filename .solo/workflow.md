@@ -61,6 +61,13 @@ ride along as one isolated commit. Tool-config changes (`.golangci.yml`) get the
 - quality reviewer: Claude
 - acceptance judge: Claude
 
+## Harness operations
+- Solo spawns OpenCode with the main checkout as its working directory. A separate worktree therefore
+  triggers per-directory permission prompts; grant permission at the worktree root once. Poll OpenCode
+  for completion instead of arming an idle timer because its animated TUI never registers as idle.
+- Never put backticks in text sent to an OpenCode agent. The shell interprets them and mangles the
+  message. Put detailed briefs on disk and send a short, backtick-free pointer to the file.
+
 ## Plan & coordination
 - plan location: the PRD scratchpad assembled at build kickoff (brain hands it over).
 - run-log: the coordinator's Solo scratchpad, appended at every transition.

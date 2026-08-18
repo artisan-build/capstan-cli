@@ -1,10 +1,10 @@
 # Runner health always comes from launchd plus fresh real activity, never from a stdout log.
 # Freshness uses activity_source mtime when configured, otherwise the change in launchd's runs counter.
 inbox:
-  # Required directory where later Capstan commands can write runner health items.
+  # Required directory where `capstan runners check` writes durable runner health items.
   path: ~/Herd/brain/inbox
 state:
-  # Required writable directory reserved for remembering runs-counter observations between checks.
+  # Required writable directory for runs-counter observations and the exclusive check lock.
   path: ~/.local/state/capstan
 
 runners:

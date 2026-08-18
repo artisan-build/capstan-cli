@@ -14,6 +14,9 @@ server (auth + gated artifact host, and eventually the local always-on runner).
 - `capstan artifact create --file <path> [--visibility org|signed] [--team <slug>] [--expires <dur>]` —
   upload an artifact to the Capstan server and print its share URL. This is how agents publish
   team-visible artifacts instead of using their harness's built-in artifact tool.
+- `capstan runners check [--config <path>]` — read local launchd runner health and reconcile deduped,
+  durable Markdown findings in the configured inbox. Findings still exit 0; configuration, reader,
+  locking, and filesystem failures exit non-zero.
 
 ## Build
 
@@ -46,6 +49,35 @@ Runner health is based on launchd's exit status and reason plus freshness, never
 Freshness uses `activity_source` mtime when configured, otherwise the change in launchd's monotonic
 `runs` counter between checks. See [`docs/config.example.yaml`](docs/config.example.yaml) for a fully
 commented configuration.
+
+`capstan runners check` writes one file per runner and failure kind. Repeated findings update only
+the YAML frontmatter so human notes in the Markdown body survive. Recovery resolves the existing
+file without deleting it, and recurrence reopens that same file. The check is strictly read-only:
+it never starts, stops, restarts, reloads, or modifies a configured runner.
+
+The Markdown evidence section records the first observation and is not regenerated, preserving any
+human edits byte-for-byte. The frontmatter `evidence` mapping carries the current observed values.
+
+### Scheduling with launchd
+
+The sample [`docs/launchd/com.artisan-build.capstan-runners-check.plist`](docs/launchd/com.artisan-build.capstan-runners-check.plist)
+runs the check every five minutes using `StartInterval`. Before installing it, change
+`/opt/homebrew/bin/capstan` to the absolute path of the installed binary if necessary (Intel Homebrew
+typically uses `/usr/local/bin`). The command uses the default XDG config; add `--config` and an
+absolute config path to `ProgramArguments` if needed. The sample sends summaries and operational
+errors to `/tmp/capstan-runners-check.stdout.log` and `/tmp/capstan-runners-check.stderr.log`.
+
+Install the sample as a user LaunchAgent:
+
+```sh
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Herd/brain/inbox" "$HOME/.local/state/capstan"
+cp docs/launchd/com.artisan-build.capstan-runners-check.plist \
+  "$HOME/Library/LaunchAgents/com.artisan-build.capstan-runners-check.plist"
+launchctl bootstrap "gui/$(id -u)" \
+  "$HOME/Library/LaunchAgents/com.artisan-build.capstan-runners-check.plist"
+```
+
+This repository intentionally ships no installer for the monitor.
 
 ## Status
 

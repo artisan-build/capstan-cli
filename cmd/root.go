@@ -3,8 +3,10 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/artisan-build/capstan-cli/internal/browser"
+	"github.com/artisan-build/capstan-cli/internal/runners"
 	"github.com/spf13/cobra"
 )
 
@@ -14,6 +16,10 @@ var Version = "dev"
 var openBrowser = browser.Open
 
 func newRootCommand() *cobra.Command {
+	return newRootCommandWithRunners(runners.NewLaunchdReader(), time.Now)
+}
+
+func newRootCommandWithRunners(reader runners.HealthReader, now func() time.Time) *cobra.Command {
 	var server string
 
 	rootCmd := &cobra.Command{
@@ -30,6 +36,7 @@ func newRootCommand() *cobra.Command {
 	rootCmd.AddCommand(newArtifactCommand(&server))
 	rootCmd.AddCommand(newLoginCommand(&server))
 	rootCmd.AddCommand(newLogoutCommand())
+	rootCmd.AddCommand(NewRunnersCommand(reader, now))
 	rootCmd.AddCommand(newVersionCommand())
 	rootCmd.AddCommand(newWhoamiCommand(&server))
 
