@@ -4,9 +4,42 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestStateStoreLockAcquireReleaseAndContention(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "state")
+	store := NewStateStore(dir)
+	lock, err := store.AcquireLock()
+	if err != nil {
+		t.Fatalf("AcquireLock() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, lockFilename)); err != nil {
+		t.Fatalf("Stat(lock file) error = %v", err)
+	}
+
+	if _, err := store.AcquireLock(); err == nil || !strings.Contains(err.Error(), "already held") {
+		t.Fatalf("contended AcquireLock() error = %v, want clear already-held error", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, lockFilename)); !os.IsNotExist(err) {
+		t.Fatalf("lock remains after Release() or stat failed unexpectedly: %v", err)
+	}
+
+	second, err := store.AcquireLock()
+	if err != nil {
+		t.Fatalf("AcquireLock() after release error = %v", err)
+	}
+	if err := second.Release(); err != nil {
+		t.Fatalf("second Release() error = %v", err)
+	}
+}
 
 func TestStateStoreRoundTrip(t *testing.T) {
 	t.Parallel()

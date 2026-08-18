@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const stateFilename = "runners.json"
+const (
+	stateFilename = "runners.json"
+	lockFilename  = "runners.lock"
+)
 
 // State is the persisted observation baseline for configured runners.
 type State struct {
@@ -28,9 +31,52 @@ type StateStore struct {
 	dir string
 }
 
+// StateLock is an exclusive lease for a state load-modify-save cycle.
+type StateLock struct {
+	path string
+}
+
 // NewStateStore returns a state store rooted at path.
 func NewStateStore(path string) *StateStore {
 	return &StateStore{dir: path}
+}
+
+// AcquireLock exclusively locks the state directory. Contention is an
+// operational failure rather than a runner health finding.
+func (s *StateStore) AcquireLock() (*StateLock, error) {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create runner state directory %q: %w", s.dir, err)
+	}
+
+	path := filepath.Join(s.dir, lockFilename)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("runner state lock %q is already held", path)
+		}
+
+		return nil, fmt.Errorf("acquire runner state lock %q: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+
+		return nil, fmt.Errorf("close runner state lock %q: %w", path, err)
+	}
+
+	return &StateLock{path: path}, nil
+}
+
+// Release removes an acquired state lock.
+func (l *StateLock) Release() error {
+	if l == nil || l.path == "" {
+		return nil
+	}
+	if err := os.Remove(l.path); err != nil {
+		return fmt.Errorf("release runner state lock %q: %w", l.path, err)
+	}
+	l.path = ""
+
+	return nil
 }
 
 // Load reads runner observation state. A missing state file is an empty cold start.
