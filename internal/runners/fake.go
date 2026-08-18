@@ -5,6 +5,8 @@ import (
 	"sync"
 )
 
+var _ HealthReader = (*FakeReader)(nil)
+
 // FakeReader is an injectable HealthReader for tests and non-launchd environments.
 type FakeReader struct {
 	HealthByRunner map[string]Health

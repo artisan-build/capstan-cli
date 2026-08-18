@@ -32,14 +32,20 @@ go build -ldflags "-X github.com/artisan-build/capstan-cli/cmd.Version=0.1.0" -o
 ## Runner configuration
 
 Local runners are configured in `$XDG_CONFIG_HOME/capstan/config.yaml`, falling back to
-`$HOME/.config/capstan/config.yaml`. Each launchd runner needs a unique `name`, its launchd `label`,
-and an `expected_cadence`. The optional `staleness_threshold` defaults to `expected_cadence`, giving
-one missed cycle of grace. Paths beginning with `~/` are expanded for `inbox.path` and
-`activity_source`.
+`$HOME/.config/capstan/config.yaml`. Both `inbox.path` and `state.path` are required writable
+directories. Each launchd runner needs a unique `name` and launchd `label`. Names are 1-64 ASCII
+letters, digits, dots, underscores, or hyphens, must start with a letter or digit, and are unique
+case-insensitively.
 
-Runner health is based on the scheduler's last exit status and the freshness of real activity, never
-on stdout logs. See [`docs/config.example.yaml`](docs/config.example.yaml) for a fully commented
-configuration.
+`expected_cadence` is optional: omitting it defines an on-demand runner with no staleness checks. For
+periodic runners, `expected_cadence` must be positive and `staleness_threshold` defaults to it. A
+threshold cannot be configured without a cadence. Paths beginning with `~/` are expanded for
+`inbox.path`, `state.path`, and `activity_source`.
+
+Runner health is based on launchd's exit status and reason plus freshness, never on stdout logs.
+Freshness uses `activity_source` mtime when configured, otherwise the change in launchd's monotonic
+`runs` counter between checks. See [`docs/config.example.yaml`](docs/config.example.yaml) for a fully
+commented configuration.
 
 ## Status
 

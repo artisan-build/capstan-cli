@@ -1,29 +1,33 @@
-# Runner health always comes from the last exit status plus fresh real activity, never from a stdout log.
+# Runner health always comes from launchd plus fresh real activity, never from a stdout log.
+# Freshness uses activity_source mtime when configured, otherwise the change in launchd's runs counter.
 inbox:
   # Required directory where later Capstan commands can write runner health items.
   path: ~/Herd/brain/inbox
+state:
+  # Required writable directory reserved for remembering runs-counter observations between checks.
+  path: ~/.local/state/capstan
 
 runners:
-  # Required stable, unique runner identifier used when deduplicating inbox items.
+  # Required 1-64 character identifier: ASCII letters/digits, then letters/digits/dot/underscore/hyphen.
+  # Names are unique case-insensitively because they are also used in dedupe fingerprints and filenames.
   - name: ballast-rescore
     # Required runner mechanism; launchd is currently the only supported type.
     type: launchd
-    # Required launchd service label.
+    # Required launchd service label; each configured runner must use a unique label.
     label: build.artisan.ballast-rescore
-    # Required interval between expected successful runs.
+    # Optional expected interval; setting it makes this a periodic runner with staleness checks.
     expected_cadence: 1h
-    # Optional freshness limit; when omitted it defaults to expected_cadence.
+    # Optional freshness limit; requires expected_cadence and defaults to it when omitted.
     staleness_threshold: 30m
-    # Optional path to the runner's real activity marker; Ballast records completion here.
+    # Optional real activity marker whose mtime overrides runs-counter freshness.
     activity_source: ~/.ballast/last-run
 
-  # Required stable, unique runner identifier used when deduplicating inbox items.
+  # This transcript runner is on-demand: omitting expected_cadence disables staleness checks entirely.
+  # Its required name follows the same filesystem-safe rule described above.
   - name: transcript-runner
     # Required runner mechanism; launchd is currently the only supported type.
     type: launchd
-    # Required launchd service label.
+    # Required unique launchd service label.
     label: build.artisan.transcript-runner
-    # Required interval between expected successful runs.
-    expected_cadence: 15m
-    # Optional freshness limit; omitted here, so it defaults to expected_cadence (15m).
-    # Optional activity_source is also omitted; launchd's real scheduler activity is used.
+    # expected_cadence and staleness_threshold are intentionally omitted for this on-demand runner.
+    # activity_source is optional and omitted, so freshness uses launchd's monotonic runs counter.
