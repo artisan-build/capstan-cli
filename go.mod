@@ -1,6 +1,6 @@
 module github.com/artisan-build/capstan-cli
 
-go 1.26
+go 1.26.9
 
 require (
 	github.com/go-viper/mapstructure/v2 v2.4.0
@@ -21,5 +21,5 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 )
