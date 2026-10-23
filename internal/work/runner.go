@@ -78,6 +78,17 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if r.config.Launcher == "solo" && (len(response.Items) > 0 || len(response.Directives) > 0) &&
+		(response.SpokeID == nil || *response.SpokeID < 1) {
+		return errors.New("work claim response omitted the authoritative spoke id")
+	}
+	if r.config.Launcher == "solo" && response.SpokeID != nil {
+		for _, item := range state.Items {
+			if item.SpokeID != 0 && item.SpokeID != *response.SpokeID {
+				return errors.New("work claim response changed the authoritative spoke id")
+			}
+		}
+	}
 	leafClaims, orchestratorClaims := 0, 0
 	for _, item := range response.Items {
 		if item.Role == "orchestrator" {
@@ -96,7 +107,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 	for _, claim := range response.Items {
-		if err := r.startClaim(ctx, &state, claim); err != nil {
+		spokeID := int64(0)
+		if response.SpokeID != nil {
+			spokeID = *response.SpokeID
+		}
+		if err := r.startClaim(ctx, &state, claim, spokeID); err != nil {
 			r.log(fmt.Sprintf("launch failed: item_id=%s", safeID(claim.ID)))
 		}
 	}
@@ -189,7 +204,7 @@ func (r *Runner) recover(ctx context.Context, state *State) error {
 	return nil
 }
 
-func (r *Runner) startClaim(ctx context.Context, state *State, claim ClaimItem) error {
+func (r *Runner) startClaim(ctx context.Context, state *State, claim ClaimItem, spokeID int64) error {
 	if err := r.validateClaim(claim); err != nil {
 		return err
 	}
@@ -205,7 +220,7 @@ func (r *Runner) startClaim(ctx context.Context, state *State, claim ClaimItem) 
 	}
 	item := &ItemState{
 		TaskID: claim.TaskID, Role: claim.Role, Fence: claim.Fence, Phase: "claimed", WorkDir: workDir,
-		LaunchNonce: claim.LaunchNonce, SeatFence: claim.SeatFence, PendingLaunchKey: "initial:" + claim.LaunchNonce,
+		LaunchNonce: claim.LaunchNonce, SeatFence: claim.SeatFence, SpokeID: spokeID, PendingLaunchKey: "initial:" + claim.LaunchNonce,
 	}
 	state.Items[claim.ID] = item
 	if err := r.writeLinks(item, claim.Links); err != nil {
@@ -278,7 +293,7 @@ func (r *Runner) ensureRouted(ctx context.Context, state *State, id string) erro
 		}
 	}
 	if item.Phase == "routed" {
-		if err := r.launcher.OpenGate(ctx, filepath.Join(item.WorkDir, gateFilename)); err != nil {
+		if err := r.launcher.OpenGate(ctx, item.SessionRef, filepath.Join(item.WorkDir, gateFilename)); err != nil {
 			return errors.New("launcher gate could not be opened")
 		}
 	}
@@ -408,7 +423,7 @@ func (r *Runner) executeDirective(ctx context.Context, state *State, directive D
 	item := state.Items[directive.ItemID]
 	switch directive.Kind {
 	case "send_enter":
-		return r.launcher.SendEnter(ctx, item.SessionRef, directive.ID)
+		return r.launcher.SendEnter(ctx, item.SessionRef, filepath.Join(item.WorkDir, linksFilename), directive.ID)
 	case "resend_pointer":
 		if err := validateLinks(item.Role, directive.Links); err != nil {
 			return err
@@ -418,7 +433,7 @@ func (r *Runner) executeDirective(ctx context.Context, state *State, directive D
 		}
 		return r.launcher.ResendPointer(ctx, item.SessionRef, filepath.Join(item.WorkDir, linksFilename), directive.ID)
 	case "respawn":
-		if !validUUID(directive.Payload.LaunchNonce) {
+		if !validUUIDv7(directive.Payload.LaunchNonce) {
 			return errors.New("respawn directive has an invalid launch nonce")
 		}
 		if err := validateLinks(item.Role, directive.Links); err != nil {
@@ -448,7 +463,7 @@ func (r *Runner) executeDirective(ctx context.Context, state *State, directive D
 		if err := r.establish(ctx, state, directive.ItemID, "directive:"+directive.ID, ""); err != nil {
 			return err
 		}
-		if err := r.launcher.OpenGate(ctx, filepath.Join(item.WorkDir, gateFilename)); err != nil {
+		if err := r.launcher.OpenGate(ctx, item.SessionRef, filepath.Join(item.WorkDir, gateFilename)); err != nil {
 			_ = r.launcher.Terminate(ctx, item.SessionRef)
 			item.SessionRef = ""
 			item.Phase = "claimed"
@@ -479,10 +494,17 @@ func (r *Runner) acknowledgeReported(state *State) error {
 }
 
 func (r *Runner) validateClaim(claim ClaimItem) error {
-	if !validUUID(claim.ID) || !validUUID(claim.TaskID) || !validUUID(claim.LaunchNonce) || claim.Fence < 1 {
+	if !validUUID(claim.ID) || !validUUID(claim.TaskID) || !validUUIDv7(claim.LaunchNonce) || claim.Fence < 1 {
 		return errors.New("claim response contains invalid item identity")
 	}
-	if _, ok := r.config.RoleCommands[claim.Role]; !ok {
+	if r.config.Launcher == "solo" {
+		if _, ok := r.config.SoloBindings[claim.Role]; !ok {
+			return errors.New("claim response contains an unsupported role")
+		}
+		if claim.Role != "orchestrator" && claim.SessionRef != "" {
+			return errors.New("claim response tried to reuse a leaf session")
+		}
+	} else if _, ok := r.config.RoleCommands[claim.Role]; !ok {
 		return errors.New("claim response contains an unsupported role")
 	}
 	return validateLinks(claim.Role, claim.Links)
@@ -524,19 +546,23 @@ func (r *Runner) writePrompt(id string, item *ItemState, existingSession string)
 
 func (r *Runner) launchSpec(id string, item *ItemState, key, existing string) (LaunchSpec, error) {
 	values := r.values(id, item, existing)
-	command := make([]string, len(r.config.RoleCommands[item.Role]))
-	for index, part := range r.config.RoleCommands[item.Role] {
-		rendered, err := render(part, values)
-		if err != nil {
-			return LaunchSpec{}, err
+	var command []string
+	if r.config.Launcher != "solo" {
+		command = make([]string, len(r.config.RoleCommands[item.Role]))
+		for index, part := range r.config.RoleCommands[item.Role] {
+			rendered, err := render(part, values)
+			if err != nil {
+				return LaunchSpec{}, err
+			}
+			command[index] = rendered
 		}
-		command[index] = rendered
 	}
 
 	return LaunchSpec{
 		Command: command, WorkDir: item.WorkDir, PromptPath: filepath.Join(item.WorkDir, promptFilename),
 		LinksPath: filepath.Join(item.WorkDir, linksFilename), GatePath: filepath.Join(item.WorkDir, gateFilename),
-		LaunchKey: key, ExistingSessionRef: existing,
+		LaunchKey: key, ExistingSessionRef: existing, Role: item.Role, SpokeID: item.SpokeID,
+		LaunchNonce: item.LaunchNonce, SoloBinding: r.config.SoloBindings[item.Role],
 	}, nil
 }
 

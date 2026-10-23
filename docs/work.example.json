@@ -1,5 +1,6 @@
 {
-  "version": 1,
+  "version": 2,
+  "launcher": "solo",
   "capstan_url": "https://capstan.example.com",
   "team": "example-team",
   "actor_id": "123",
@@ -19,9 +20,22 @@
   "lock_file": "var/work.lock",
   "prompt_template": "work-prompt.md",
   "orchestrator_prompt_template": "orchestrator-prompt.md",
-  "role_commands": {
-    "builder": ["/absolute/path/to/agent", "--prompt-file", "{prompt_file}"],
-    "orchestrator": ["/absolute/path/to/orchestrator", "--prompt-file", "{prompt_file}"]
+  "solo_mcp_path": "/Applications/Solo.app/Contents/MacOS/mcp",
+  "solo_call_timeout_seconds": 30,
+  "solo_ready_timeout_seconds": 120,
+  "solo_bindings": {
+    "builder": {
+      "project_id": 12,
+      "agent_tool_id": 34,
+      "harness": "opencode",
+      "extra_args": []
+    },
+    "orchestrator": {
+      "project_id": 12,
+      "agent_tool_id": 35,
+      "harness": "claude",
+      "extra_args": []
+    }
   },
   "request_timeout_seconds": 15
 }

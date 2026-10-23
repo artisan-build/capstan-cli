@@ -89,6 +89,7 @@ type DirectivePayload struct {
 type ClaimResponse struct {
 	Items      []ClaimItem `json:"items"`
 	Directives []Directive `json:"directives"`
+	SpokeID    *int64      `json:"spoke_id"`
 }
 
 // RenewRequestItem is one fenced item in a bounded renewal batch.

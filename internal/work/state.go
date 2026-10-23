@@ -30,6 +30,7 @@ type ItemState struct {
 	LaunchNonce      string          `json:"launch_nonce"`
 	SessionRef       string          `json:"session_ref,omitempty"`
 	SeatFence        int             `json:"seat_fence,omitempty"`
+	SpokeID          int64           `json:"spoke_id,omitempty"`
 	PendingLaunchKey string          `json:"pending_launch_key,omitempty"`
 	Directive        *DirectiveState `json:"directive,omitempty"`
 }
@@ -115,7 +116,7 @@ func (s *StateStore) Save(state State) error {
 func (s *StateStore) validateItem(id string, item *ItemState) error {
 	if !validUUID(id) || item == nil || !validUUID(item.TaskID) || item.Fence < 1 || item.Role == "" ||
 		(item.Phase != "claimed" && item.Phase != "launched" && item.Phase != "delivered" && item.Phase != "routed") ||
-		!validUUID(item.LaunchNonce) {
+		!validUUID(item.LaunchNonce) || item.SpokeID < 0 {
 		return errors.New("invalid item fields")
 	}
 	wantDir := filepath.Join(s.workDir, fmt.Sprintf("%s-f%d", id, item.Fence))
