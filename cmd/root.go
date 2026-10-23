@@ -7,6 +7,7 @@ import (
 
 	"github.com/artisan-build/capstan-cli/internal/browser"
 	"github.com/artisan-build/capstan-cli/internal/runners"
+	workprotocol "github.com/artisan-build/capstan-cli/internal/work"
 	"github.com/spf13/cobra"
 )
 
@@ -39,6 +40,8 @@ func newRootCommandWithRunners(reader runners.HealthReader, now func() time.Time
 	rootCmd.AddCommand(NewRunnersCommand(reader, now))
 	rootCmd.AddCommand(newVersionCommand())
 	rootCmd.AddCommand(newWhoamiCommand(&server))
+	rootCmd.AddCommand(newWorkCommand(workprotocol.Execute))
+	rootCmd.AddCommand(newWorkGateCommand())
 
 	return rootCmd
 }

@@ -1,6 +1,6 @@
 # capstan-cli
 
-The Go command-line client for the **Capstan** ecosystem server — the fork-and-deploy AI ecosystem
+The Go command-line client for the **Capstan** ecosystem server, the fork-and-deploy AI ecosystem
 server (auth + gated artifact host, and eventually the local always-on runner).
 
 ## Slice-1 verbs
@@ -17,6 +17,8 @@ server (auth + gated artifact host, and eventually the local always-on runner).
 - `capstan runners check [--config <path>]` — read local launchd runner health and reconcile deduped,
   durable Markdown findings in the configured inbox. Findings still exit 0; configuration, reader,
   locking, and filesystem failures exit non-zero.
+- `capstan work drain [--config <path>]` — run one recovery, renewal, claim, and launch tick for
+  Capstan Work. A scheduler starts each tick; the command does not remain resident.
 
 ## Build
 
@@ -78,6 +80,59 @@ launchctl bootstrap "gui/$(id -u)" \
 ```
 
 This repository intentionally ships no installer for the monitor.
+
+## Work drain
+
+`capstan work drain` defaults to `$XDG_CONFIG_HOME/capstan/work.json`, falling back to
+`$HOME/.config/capstan/work.json`. The file must have mode `0600` or stricter. Start with
+[`docs/work.example.json`](docs/work.example.json), copy it into the Capstan config directory, and
+replace its example values and absolute command paths. Relative paths are resolved from the config
+file's directory.
+
+There is no daemon.
+
+The credential file contains only a bound `capstan.work.drain` bearer and must also have mode `0600`
+or stricter. The drain reads it after taking the non-blocking overlap lock. It sends the bearer in the
+Authorization header and never writes it to state or output. `capstan_url` must use HTTPS except for
+localhost and loopback development.
+
+Each role needs an explicit provider and an argv array in `role_commands`; shell command strings are
+not accepted. Prompt and command templates may use `{config_dir}`, `{fence}`, `{item_id}`,
+`{launch_nonce}`, `{links_file}`, `{prompt_file}`, `{role}`, `{seat_fence}`, `{session_ref}`,
+`{task_id}`, and `{work_dir}`. Unknown placeholders stop configuration loading. Signed URLs are kept
+only in each item's private `links.json`, so prompts should tell the worker to read `{links_file}`
+instead of copying URLs into the prompt or command line.
+
+Before it claims anything, one tick loads the durable record, renews every recorded item in batches
+of at most 25, stops local sessions that have lost authority, releases live claims whose sessions
+have died, and resumes partial `delivered` and `routed` transitions. Load or memory above the
+configured ceiling sends zero leaf and orchestrator capacity while still reporting held items and
+accepting server-selected repair directives. A failed health measurement stops the tick without
+claiming.
+
+Leaf `max_concurrent` and `orchestrator_capacity` are separate, but their sum cannot exceed the
+server batch limit of 25. Every claim tick reports both capacities, the current held leaf count,
+roles, capabilities, role providers, and fenced held items. The drain runs only `send_enter`,
+`resend_pointer`, or `respawn` directives returned by that tick. Directive outcomes are durable and
+reported on the next tick; replay does not execute a completed directive twice.
+
+The generic launcher runs configured argv without a shell behind a local gate. It records recovery
+state, sends `delivered` with the server nonce and opaque session reference, sends `routed`, and then
+opens the gate. This adapter cannot send interactive Enter or pointer repairs, so those directives
+report failure. PR7 will add the Solo stdio launcher, `capstan work setup`, and the live self-test;
+this command does not contain Solo-specific behavior yet.
+
+Run one tick from a scheduler such as launchd, systemd, or cron:
+
+```sh
+/absolute/path/to/capstan work drain
+```
+
+Run it once per minute and use absolute paths in the scheduler. Overlapping runs exit successfully
+without reading the credential or making an HTTP request. Keep the config, credential, state, lock,
+and item directories under a private user-owned directory. The global state file contains fences,
+phases, nonces, and opaque session references. No bearer, prompt, or signed URL enters it. Item prompt and
+link files use mode `0600`; their parent directories use mode `0700`.
 
 ## Status
 

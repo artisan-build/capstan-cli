@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "capstan_url": "https://capstan.example.com",
+  "team": "example-team",
+  "actor_id": "123",
+  "credential_file": "credentials/work-drain",
+  "max_concurrent": 2,
+  "orchestrator_capacity": 1,
+  "max_load_1m": 6,
+  "max_memory_percent": 85,
+  "capabilities": ["git"],
+  "roles": ["builder", "orchestrator"],
+  "role_providers": {
+    "builder": "opencode",
+    "orchestrator": "claude"
+  },
+  "state_file": "var/work-state.json",
+  "work_dir": "var/work-items",
+  "lock_file": "var/work.lock",
+  "prompt_template": "work-prompt.md",
+  "orchestrator_prompt_template": "orchestrator-prompt.md",
+  "role_commands": {
+    "builder": ["/absolute/path/to/agent", "--prompt-file", "{prompt_file}"],
+    "orchestrator": ["/absolute/path/to/orchestrator", "--prompt-file", "{prompt_file}"]
+  },
+  "request_timeout_seconds": 15
+}
