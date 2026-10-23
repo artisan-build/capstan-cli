@@ -675,7 +675,7 @@ func TestRunnerSoloRoutingIdentityReuseAndColdReplacement(t *testing.T) {
 		api := &fakeAPI{claimFn: func(ClaimRequest) (ClaimResponse, error) {
 			return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "orchestrator", Fence: 1, SeatFence: 3, LaunchNonce: testNonce, SessionRef: ref, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
 		}}
-		solo := &fakeSoloCall{status: soloProcessStatus{ID: 88, Kind: "agent", Status: "Running"}}
+		solo := &fakeSoloCall{status: soloProcessStatus{ID: 88, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Running"}}
 		solo.status.AgentState.Idle = true
 		launcher := NewSoloLauncher(solo, time.Second)
 		launcher.pollInterval = time.Millisecond
@@ -709,7 +709,7 @@ func TestRunnerSoloRoutingIdentityReuseAndColdReplacement(t *testing.T) {
 				return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "orchestrator", Fence: 2, LaunchNonce: testNonce, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
 			},
 		}
-		solo := &fakeSoloCall{status: soloProcessStatus{ID: 66, Kind: "agent", Status: "Stopped"}, outputs: []string{"\n❯\n"}}
+		solo := &fakeSoloCall{status: soloProcessStatus{ID: 66, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Stopped"}, outputs: []string{"\n❯\n"}}
 		launcher := NewSoloLauncher(solo, time.Second)
 		launcher.pollInterval = time.Millisecond
 		runner := NewRunner(config, api, launcher, staticHealth{}, nil)

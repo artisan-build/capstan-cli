@@ -17,7 +17,10 @@ import (
 
 const maxPointerBytes = 299
 
-var readyMarker = regexp.MustCompile(`(?m)^\s*[│|]?\s*[❯›>]\s*$`)
+var (
+	readyMarker         = regexp.MustCompile(`(?m)^\s*[│|]?\s*[❯›>]\s*$`)
+	openCodeReadyMarker = regexp.MustCompile(`(?m)^\s*┃\s+Ask anything, / for commands, @ for context…\s*$`)
+)
 
 // SoloSessionRef is the canonical, non-secret identity handed to Capstan.
 type SoloSessionRef struct {
@@ -65,6 +68,7 @@ func ParseSoloSessionRef(value string) (SoloSessionRef, error) {
 
 type soloProcessStatus struct {
 	ID         int64  `json:"id"`
+	Name       string `json:"name"`
 	Kind       string `json:"kind"`
 	Status     string `json:"status"`
 	AgentState struct {
@@ -144,7 +148,7 @@ func (l *SoloLauncher) Alive(ctx context.Context, sessionRef string) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	return status.Kind == "agent" && status.Status == "Running" && status.ID == ref.SoloProcessID, nil
+	return status.Kind == "agent" && status.Status == "Running" && statusMatchesRef(status, ref), nil
 }
 
 func (l *SoloLauncher) Terminate(ctx context.Context, sessionRef string) error {
@@ -243,7 +247,7 @@ func (l *SoloLauncher) waitReady(ctx context.Context, ref SoloSessionRef, allowT
 			time.Sleep(l.pollInterval)
 			continue
 		}
-		if readyMarker.MatchString(output) || strings.Contains(output, "? for shortcuts") {
+		if readyMarker.MatchString(output) || openCodeReadyMarker.MatchString(output) || strings.Contains(output, "? for shortcuts") {
 			return nil
 		}
 		time.Sleep(l.pollInterval)
@@ -258,7 +262,7 @@ func (l *SoloLauncher) waitIdle(ctx context.Context, ref SoloSessionRef) error {
 		if err != nil {
 			return err
 		}
-		if status.Kind != "agent" || status.Status != "Running" || status.ID != ref.SoloProcessID {
+		if status.Kind != "agent" || status.Status != "Running" || !statusMatchesRef(status, ref) {
 			return errors.New("reusable Solo session is not alive")
 		}
 		if status.AgentState.Idle {
@@ -293,21 +297,15 @@ func (l *SoloLauncher) status(ctx context.Context, ref SoloSessionRef) (soloProc
 }
 
 func (l *SoloLauncher) output(ctx context.Context, ref SoloSessionRef) (string, error) {
-	var output struct {
-		Output string `json:"output"`
-		Text   string `json:"text"`
-	}
+	var output string
 	if err := l.client.Call(ctx, "get_process_output", map[string]any{"process_id": ref.SoloProcessID, "project_id": ref.SoloProjectID, "lines": 60}, &output); err != nil {
 		return "", errors.New("solo process output could not be read")
 	}
-	if output.Output != "" {
-		return output.Output, nil
-	}
-	return output.Text, nil
+	return output, nil
 }
 
 func (l *SoloLauncher) sendText(ctx context.Context, ref SoloSessionRef, text string) error {
-	return l.send(ctx, ref, map[string]any{"process_id": ref.SoloProcessID, "project_id": ref.SoloProjectID, "input": text})
+	return l.send(ctx, ref, map[string]any{"process_id": ref.SoloProcessID, "project_id": ref.SoloProjectID, "input": text, "submit": false})
 }
 
 func (l *SoloLauncher) sendBytes(ctx context.Context, ref SoloSessionRef, value []int) error {
@@ -325,10 +323,21 @@ func (l *SoloLauncher) send(ctx context.Context, ref SoloSessionRef, arguments m
 }
 
 func (l *SoloLauncher) close(ctx context.Context, ref SoloSessionRef) error {
+	status, err := l.status(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if !statusMatchesRef(status, ref) {
+		return nil
+	}
 	if err := l.client.Call(ctx, "close_process", map[string]any{"process_id": ref.SoloProcessID, "project_id": ref.SoloProjectID}, nil); err != nil {
 		return errors.New("solo process could not be closed")
 	}
 	return nil
+}
+
+func statusMatchesRef(status soloProcessStatus, ref SoloSessionRef) bool {
+	return status.ID == ref.SoloProcessID && status.Kind == "agent" && strings.HasPrefix(status.Name, "capstan-") && strings.HasSuffix(status.Name, "-"+ref.LaunchNonce)
 }
 
 func pointerFromLinks(path, nonce string) (string, error) {

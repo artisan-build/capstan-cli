@@ -80,6 +80,36 @@ for line in sys.stdin:
 	})
 }
 
+func TestSoloLauncherReadsRenderedProcessOutputAsText(t *testing.T) {
+	path := writeMCPPeer(t, `
+import json, sys
+for line in sys.stdin:
+    msg=json.loads(line)
+    if 'id' not in msg: continue
+    if msg['method']=='initialize': result={}
+    else:
+        name=msg['params']['name']
+        text='┃ Ask anything, / for commands, @ for context…' if name=='get_process_output' else '{}'
+        result={'content':[{'type':'text','text':text}]}
+    print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':result}), flush=True)
+`)
+	client, err := NewStdioSoloClient(context.Background(), path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	launcher := NewSoloLauncher(client, time.Second)
+	ref := SoloSessionRef{SoloProjectID: 8, SoloProcessID: 77}
+	got, err := launcher.output(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "┃ Ask anything, / for commands, @ for context…"
+	if got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
 func writeMCPPeer(t *testing.T, source string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "mcp-peer")

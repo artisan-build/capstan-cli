@@ -58,7 +58,7 @@ func (f *fakeSoloCall) Call(_ context.Context, name string, arguments any, targe
 			output = f.outputs[0]
 			f.outputs = f.outputs[1:]
 		}
-		value = map[string]any{"output": output}
+		value = output
 	case "close_process":
 		return nil
 	default:
@@ -115,6 +115,9 @@ func TestSoloLauncherTrustReadyPointerAndCanonicalIdentity(t *testing.T) {
 	if !reflect.DeepEqual(sends[3]["bytes"], []int{13}) {
 		t.Fatalf("Enter was not separate: %#v", sends[3])
 	}
+	if submit, ok := sends[2]["submit"].(bool); !ok || submit {
+		t.Fatalf("pointer text call submit = %#v", sends[2]["submit"])
+	}
 	for _, send := range sends {
 		if reflect.DeepEqual(send["bytes"], []int{9}) {
 			t.Fatal("launcher sent Tab")
@@ -131,7 +134,7 @@ func TestSoloLauncherIdleWakeAndDirectiveActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake := &fakeSoloCall{status: soloProcessStatus{ID: 77, Kind: "agent", Status: "Running"}}
+	fake := &fakeSoloCall{status: soloProcessStatus{ID: 77, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Running"}}
 	fake.status.AgentState.Idle = true
 	launcher := NewSoloLauncher(fake, time.Second)
 	launcher.pollInterval = time.Millisecond
@@ -168,11 +171,77 @@ func TestSoloLauncherIdleWakeAndDirectiveActions(t *testing.T) {
 	if !reflect.DeepEqual(bytesSent, wantBytes) {
 		t.Fatalf("directive bytes = %#v", bytesSent)
 	}
+	for _, call := range fake.calls {
+		if call.name == "send_input" {
+			if _, isText := call.arguments["input"]; isText {
+				if submit, ok := call.arguments["submit"].(bool); !ok || submit {
+					t.Fatalf("pointer text call = %#v", call.arguments)
+				}
+			}
+		}
+	}
+}
+
+func TestSoloLauncherRecognizesOnlyCompleteOpenCodeReadyMarker(t *testing.T) {
+	ref := SoloSessionRef{SoloProjectID: 8, SoloProcessID: 77}
+
+	t.Run("real marker", func(t *testing.T) {
+		fake := &fakeSoloCall{outputs: []string{"┃ Ask anything, / for commands, @ for context…"}}
+		launcher := NewSoloLauncher(fake, 20*time.Millisecond)
+		launcher.pollInterval = time.Millisecond
+		if err := launcher.waitReady(context.Background(), ref, false); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("blank working line", func(t *testing.T) {
+		fake := &fakeSoloCall{outputs: []string{"working\n┃"}}
+		launcher := NewSoloLauncher(fake, 5*time.Millisecond)
+		launcher.pollInterval = time.Millisecond
+		if err := launcher.waitReady(context.Background(), ref, false); err == nil {
+			t.Fatal("blank OpenCode line was treated as ready")
+		}
+	})
+}
+
+func TestSoloLauncherFencesReusedProcessIDByName(t *testing.T) {
+	ref, err := (SoloSessionRef{SpokeID: 42, SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "claude", AgentToolID: 9}).String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"capstan-builder-019a0000-0000-7000-8000-000000000099",
+		"unrelated-builder-" + testNonce,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeSoloCall{status: soloProcessStatus{ID: 77, Name: name, Kind: "agent", Status: "Running"}}
+			fake.status.AgentState.Idle = true
+			launcher := NewSoloLauncher(fake, 5*time.Millisecond)
+			launcher.pollInterval = time.Millisecond
+
+			alive, err := launcher.Alive(context.Background(), ref)
+			if err != nil || alive {
+				t.Fatalf("alive = %v, %v", alive, err)
+			}
+			spec := LaunchSpec{Role: "orchestrator", SpokeID: 42, LaunchNonce: testNonce, ExistingSessionRef: ref, SoloBinding: SoloBinding{ProjectID: 8, AgentToolID: 9, Harness: "claude"}}
+			if _, err := launcher.Launch(context.Background(), spec); err == nil {
+				t.Fatal("reused process id was accepted for idle reuse")
+			}
+			if err := launcher.Terminate(context.Background(), ref); err != nil {
+				t.Fatal(err)
+			}
+			for _, call := range fake.calls {
+				if call.name == "close_process" {
+					t.Fatalf("unrelated process was closed: %#v", call.arguments)
+				}
+			}
+		})
+	}
 }
 
 func TestSoloLauncherUnhealthyPTYClosesExactProcess(t *testing.T) {
 	ref, _ := (SoloSessionRef{SpokeID: 42, SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "codex", AgentToolID: 9}).String()
-	fake := &fakeSoloCall{outputs: []string{"pending"}, sendFailures: 2}
+	fake := &fakeSoloCall{outputs: []string{"pending"}, status: soloProcessStatus{ID: 77, Name: "capstan-builder-" + testNonce, Kind: "agent", Status: "Running"}, sendFailures: 2}
 	launcher := NewSoloLauncher(fake, time.Second)
 	links := filepath.Join(t.TempDir(), linksFilename)
 	if err := atomicPrivateWrite(links, mustJSON(t, testLinks("https://server.example"))); err != nil {
