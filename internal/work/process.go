@@ -100,17 +100,17 @@ func (l *ProcessLauncher) Terminate(_ context.Context, sessionRef string) error 
 }
 
 // OpenGate atomically permits a prepared external command to run.
-func (l *ProcessLauncher) OpenGate(_ context.Context, _ string, path string) error {
+func (l *ProcessLauncher) OpenGate(_ context.Context, _ string, path, _ string) error {
 	return writePrivate(path, "ready\n")
 }
 
 // SendEnter is intentionally unsupported by the non-interactive process adapter.
-func (l *ProcessLauncher) SendEnter(context.Context, string, string, string) error {
+func (l *ProcessLauncher) SendEnter(context.Context, string, string, string, string) error {
 	return ErrUnsupportedAction
 }
 
 // ResendPointer is intentionally unsupported by the non-interactive process adapter.
-func (l *ProcessLauncher) ResendPointer(context.Context, string, string, string) error {
+func (l *ProcessLauncher) ResendPointer(context.Context, string, string, string, string) error {
 	return ErrUnsupportedAction
 }
 

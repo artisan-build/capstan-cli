@@ -18,6 +18,7 @@ type fakeSoloCall struct {
 	calls        []soloCallRecord
 	outputs      []string
 	status       soloProcessStatus
+	statuses     []soloProcessStatus
 	lastInput    string
 	sendFailures int
 }
@@ -45,6 +46,8 @@ func (f *fakeSoloCall) Call(_ context.Context, name string, arguments any, targe
 	var value any
 	switch name {
 	case "spawn_agent":
+		f.status = soloProcessStatus{ID: 77, Name: args["name"].(string), Kind: "agent", Status: "Running"}
+		f.status.AgentState.Idle = true
 		if raw, ok := target.(*string); ok {
 			*raw = `{"process_id":77}`
 			return nil
@@ -52,6 +55,10 @@ func (f *fakeSoloCall) Call(_ context.Context, name string, arguments any, targe
 		value = map[string]any{"process_id": 77}
 	case "get_process_status":
 		value = f.status
+		if len(f.statuses) > 0 {
+			value = f.statuses[0]
+			f.statuses = f.statuses[1:]
+		}
 	case "get_process_output":
 		output := f.lastInput
 		if len(f.outputs) > 0 {
@@ -71,7 +78,7 @@ func (f *fakeSoloCall) Call(_ context.Context, name string, arguments any, targe
 func (f *fakeSoloCall) Close() error { return nil }
 
 func TestSoloLauncherTrustReadyPointerAndCanonicalIdentity(t *testing.T) {
-	fake := &fakeSoloCall{outputs: []string{"Quick safety check\n❯ 1. No, exit", "\n❯\n"}}
+	fake := &fakeSoloCall{outputs: []string{"Quick safety check\n❯ 1. No, exit", "┃ Ask anything, / for commands, @ for context…"}}
 	launcher := NewSoloLauncher(fake, time.Second)
 	launcher.pollInterval = time.Millisecond
 	root := t.TempDir()
@@ -92,7 +99,7 @@ func TestSoloLauncherTrustReadyPointerAndCanonicalIdentity(t *testing.T) {
 	if !reflect.DeepEqual(decoded, want) {
 		t.Fatalf("session ref = %#v", decoded)
 	}
-	if err := launcher.OpenGate(context.Background(), ref, filepath.Join(root, gateFilename)); err != nil {
+	if err := launcher.OpenGate(context.Background(), ref, filepath.Join(root, gateFilename), testNonce); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,7 +145,7 @@ func TestSoloLauncherIdleWakeAndDirectiveActions(t *testing.T) {
 	fake.status.AgentState.Idle = true
 	launcher := NewSoloLauncher(fake, time.Second)
 	launcher.pollInterval = time.Millisecond
-	spec := LaunchSpec{Role: "orchestrator", SpokeID: 42, LaunchNonce: testNonce, ExistingSessionRef: ref, SoloBinding: SoloBinding{ProjectID: 8, AgentToolID: 9, Harness: "claude", ExtraArgs: []string{}}}
+	spec := LaunchSpec{Role: "orchestrator", SpokeID: 42, LaunchNonce: testRespawnNonce, ExistingSessionRef: ref, SoloBinding: SoloBinding{ProjectID: 8, AgentToolID: 9, Harness: "claude", ExtraArgs: []string{}}}
 	if got, err := launcher.Launch(context.Background(), spec); err != nil || got != ref {
 		t.Fatalf("wake = %q, %v", got, err)
 	}
@@ -152,13 +159,13 @@ func TestSoloLauncherIdleWakeAndDirectiveActions(t *testing.T) {
 	if err := atomicPrivateWrite(links, mustJSON(t, testLinks("https://server.example"))); err != nil {
 		t.Fatal(err)
 	}
-	pointer, _ := pointerFromLinks(links, testNonce)
+	pointer, _ := pointerFromLinks(links, testRespawnNonce)
 	fake.outputs = []string{"prompt: " + pointer}
-	if err := launcher.SendEnter(context.Background(), ref, links, testDirectiveID); err != nil {
+	if err := launcher.SendEnter(context.Background(), ref, links, testRespawnNonce, testDirectiveID); err != nil {
 		t.Fatal(err)
 	}
 	fake.outputs = []string{pointer}
-	if err := launcher.ResendPointer(context.Background(), ref, links, testDirectiveID); err != nil {
+	if err := launcher.ResendPointer(context.Background(), ref, links, testRespawnNonce, testDirectiveID); err != nil {
 		t.Fatal(err)
 	}
 	var bytesSent [][]int
@@ -182,26 +189,97 @@ func TestSoloLauncherIdleWakeAndDirectiveActions(t *testing.T) {
 	}
 }
 
-func TestSoloLauncherRecognizesOnlyCompleteOpenCodeReadyMarker(t *testing.T) {
-	ref := SoloSessionRef{SoloProjectID: 8, SoloProcessID: 77}
-
-	t.Run("real marker", func(t *testing.T) {
-		fake := &fakeSoloCall{outputs: []string{"┃ Ask anything, / for commands, @ for context…"}}
-		launcher := NewSoloLauncher(fake, 20*time.Millisecond)
-		launcher.pollInterval = time.Millisecond
-		if err := launcher.waitReady(context.Background(), ref, false); err != nil {
-			t.Fatal(err)
+func TestSoloLauncherSelectsCompleteReadyMarkerByHarness(t *testing.T) {
+	markers := map[string]string{
+		"claude":   "❯\n────────────────\n? for shortcuts",
+		"codex":    "› Ask Codex to do anything",
+		"opencode": "┃ Ask anything, / for commands, @ for context…",
+	}
+	for harness, marker := range markers {
+		t.Run(harness+" accepts its complete marker", func(t *testing.T) {
+			ref := SoloSessionRef{SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: harness}
+			status := soloProcessStatus{ID: 77, Name: "capstan-builder-" + testNonce, Kind: "agent", Status: "Running"}
+			status.AgentState.Idle = true
+			fake := &fakeSoloCall{outputs: []string{marker}, status: status}
+			launcher := NewSoloLauncher(fake, 20*time.Millisecond)
+			launcher.pollInterval = time.Millisecond
+			if err := launcher.waitReady(context.Background(), ref, false); err != nil {
+				t.Fatal(err)
+			}
+		})
+		for label, output := range map[string]string{
+			"claude marker": markers["claude"], "codex marker": markers["codex"], "opencode marker": markers["opencode"],
+			"bare Claude glyph": "❯", "bare Codex glyph": "›", "bare ASCII glyph": ">", "blank working line": "working\n┃",
+			"busy prompt": "❯\n────────────────\nesc to interrupt", "startup fragment": "loading: ? for shortcuts",
+		} {
+			if output == marker && strings.HasSuffix(label, "marker") {
+				continue
+			}
+			t.Run(harness+" rejects "+label, func(t *testing.T) {
+				ref := SoloSessionRef{SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: harness}
+				status := soloProcessStatus{ID: 77, Name: "capstan-builder-" + testNonce, Kind: "agent", Status: "Running"}
+				status.AgentState.Idle = true
+				fake := &fakeSoloCall{outputs: []string{output}, status: status}
+				launcher := NewSoloLauncher(fake, 5*time.Millisecond)
+				launcher.pollInterval = time.Millisecond
+				if err := launcher.waitReady(context.Background(), ref, false); err == nil {
+					t.Fatalf("%s output was treated as %s readiness", label, harness)
+				}
+			})
 		}
-	})
+	}
 
-	t.Run("blank working line", func(t *testing.T) {
-		fake := &fakeSoloCall{outputs: []string{"working\n┃"}}
+	t.Run("busy Claude prompt is rejected even with complete text", func(t *testing.T) {
+		ref := SoloSessionRef{SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "claude"}
+		status := soloProcessStatus{ID: 77, Name: "capstan-builder-" + testNonce, Kind: "agent", Status: "Running"}
+		fake := &fakeSoloCall{outputs: []string{markers["claude"]}, status: status}
 		launcher := NewSoloLauncher(fake, 5*time.Millisecond)
 		launcher.pollInterval = time.Millisecond
 		if err := launcher.waitReady(context.Background(), ref, false); err == nil {
-			t.Fatal("blank OpenCode line was treated as ready")
+			t.Fatal("busy Claude process was treated as ready")
 		}
 	})
+}
+
+func TestSoloLauncherFencesEveryReadAndInputAfterProcessIDRecycle(t *testing.T) {
+	refValue, _ := (SoloSessionRef{SpokeID: 42, SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "claude", AgentToolID: 9}).String()
+	valid := soloProcessStatus{ID: 77, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Running"}
+	valid.AgentState.Idle = true
+	replacement := soloProcessStatus{ID: 77, Name: "unrelated-agent", Kind: "agent", Status: "Running"}
+	replacement.AgentState.Idle = true
+	root := t.TempDir()
+	links := filepath.Join(root, linksFilename)
+	if err := atomicPrivateWrite(links, mustJSON(t, testLinks("https://server.example"))); err != nil {
+		t.Fatal(err)
+	}
+	actions := map[string]func(*SoloLauncher) error{
+		"initial delivery": func(launcher *SoloLauncher) error {
+			return launcher.OpenGate(context.Background(), refValue, filepath.Join(root, gateFilename), testRespawnNonce)
+		},
+		"send enter": func(launcher *SoloLauncher) error {
+			return launcher.SendEnter(context.Background(), refValue, links, testRespawnNonce, testDirectiveID)
+		},
+		"resend pointer": func(launcher *SoloLauncher) error {
+			return launcher.ResendPointer(context.Background(), refValue, links, testRespawnNonce, testDirectiveID)
+		},
+	}
+	for name, action := range actions {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeSoloCall{statuses: []soloProcessStatus{valid, replacement}, outputs: []string{"must not be read"}}
+			launcher := NewSoloLauncher(fake, time.Second)
+			if alive, err := launcher.Alive(context.Background(), refValue); err != nil || !alive {
+				t.Fatalf("preliminary liveness = %v, %v", alive, err)
+			}
+			if err := action(launcher); err == nil {
+				t.Fatal("action reached a recycled process")
+			}
+			for _, call := range fake.calls {
+				if call.name == "get_process_output" || call.name == "send_input" || call.name == "close_process" {
+					t.Fatalf("operation reached replacement: %#v", call)
+				}
+			}
+		})
+	}
 }
 
 func TestSoloLauncherFencesReusedProcessIDByName(t *testing.T) {
@@ -247,7 +325,7 @@ func TestSoloLauncherUnhealthyPTYClosesExactProcess(t *testing.T) {
 	if err := atomicPrivateWrite(links, mustJSON(t, testLinks("https://server.example"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := launcher.ResendPointer(context.Background(), ref, links, testDirectiveID); err == nil {
+	if err := launcher.ResendPointer(context.Background(), ref, links, testNonce, testDirectiveID); err == nil {
 		t.Fatal("unhealthy PTY action passed")
 	}
 	last := fake.calls[len(fake.calls)-1]

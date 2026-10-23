@@ -91,7 +91,7 @@ func (f *fakeLauncher) Terminate(_ context.Context, ref string) error {
 	return nil
 }
 
-func (f *fakeLauncher) OpenGate(_ context.Context, _ string, path string) error {
+func (f *fakeLauncher) OpenGate(_ context.Context, _ string, path, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gates = append(f.gates, path)
@@ -102,7 +102,7 @@ func (f *fakeLauncher) OpenGate(_ context.Context, _ string, path string) error 
 	return nil
 }
 
-func (f *fakeLauncher) SendEnter(_ context.Context, ref, _ string, directiveID string) error {
+func (f *fakeLauncher) SendEnter(_ context.Context, ref, _, _, directiveID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.enters = append(f.enters, ref+":"+directiveID)
@@ -110,7 +110,7 @@ func (f *fakeLauncher) SendEnter(_ context.Context, ref, _ string, directiveID s
 	return nil
 }
 
-func (f *fakeLauncher) ResendPointer(_ context.Context, ref, path, directiveID string) error {
+func (f *fakeLauncher) ResendPointer(_ context.Context, ref, path, _, directiveID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pointers = append(f.pointers, ref+":"+path+":"+directiveID)
@@ -645,7 +645,7 @@ func TestRunnerSoloRoutingIdentityReuseAndColdReplacement(t *testing.T) {
 		api := &fakeAPI{claimFn: func(ClaimRequest) (ClaimResponse, error) {
 			return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "builder", Fence: 1, LaunchNonce: testNonce, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
 		}}
-		solo := &fakeSoloCall{outputs: []string{"\n❯\n"}}
+		solo := &fakeSoloCall{outputs: []string{"┃ Ask anything, / for commands, @ for context…"}}
 		launcher := NewSoloLauncher(solo, time.Second)
 		launcher.pollInterval = time.Millisecond
 		runner := NewRunner(config, api, launcher, staticHealth{}, nil)
@@ -673,7 +673,7 @@ func TestRunnerSoloRoutingIdentityReuseAndColdReplacement(t *testing.T) {
 		spokeID := int64(71)
 		ref, _ := (SoloSessionRef{SpokeID: spokeID, SoloProjectID: 12, SoloProcessID: 88, LaunchNonce: testNonce, Harness: "claude", AgentToolID: 13}).String()
 		api := &fakeAPI{claimFn: func(ClaimRequest) (ClaimResponse, error) {
-			return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "orchestrator", Fence: 1, SeatFence: 3, LaunchNonce: testNonce, SessionRef: ref, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
+			return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "orchestrator", Fence: 1, SeatFence: 3, LaunchNonce: testRespawnNonce, SessionRef: ref, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
 		}}
 		solo := &fakeSoloCall{status: soloProcessStatus{ID: 88, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Running"}}
 		solo.status.AgentState.Idle = true
@@ -689,6 +689,17 @@ func TestRunnerSoloRoutingIdentityReuseAndColdReplacement(t *testing.T) {
 		}
 		if api.transitions[0].SessionRef != ref {
 			t.Fatalf("reused session = %q", api.transitions[0].SessionRef)
+		}
+		if api.transitions[0].LaunchNonce != testRespawnNonce {
+			t.Fatalf("delivered nonce = %q", api.transitions[0].LaunchNonce)
+		}
+		pointer := firstSoloCall(t, solo.calls, "send_input").arguments["input"]
+		if text, ok := pointer.(string); !ok || !strings.Contains(text, testRespawnNonce) || strings.Contains(text, testNonce) {
+			t.Fatalf("warm-wake pointer = %#v", pointer)
+		}
+		decoded, err := ParseSoloSessionRef(api.transitions[0].SessionRef)
+		if err != nil || decoded.LaunchNonce != testNonce {
+			t.Fatalf("process-generation ref = %#v, %v", decoded, err)
 		}
 	})
 
@@ -709,7 +720,7 @@ func TestRunnerSoloRoutingIdentityReuseAndColdReplacement(t *testing.T) {
 				return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "orchestrator", Fence: 2, LaunchNonce: testNonce, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
 			},
 		}
-		solo := &fakeSoloCall{status: soloProcessStatus{ID: 66, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Stopped"}, outputs: []string{"\n❯\n"}}
+		solo := &fakeSoloCall{status: soloProcessStatus{ID: 66, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Stopped"}, outputs: []string{"❯\n────────────────\n? for shortcuts"}}
 		launcher := NewSoloLauncher(solo, time.Second)
 		launcher.pollInterval = time.Millisecond
 		runner := NewRunner(config, api, launcher, staticHealth{}, nil)
@@ -762,7 +773,7 @@ func TestRunnerSoloEndToEndFakeServerCarriesAuthoritativeIdentity(t *testing.T) 
 	defer server.Close()
 	config := testSoloConfig(t)
 	config.CapstanURL = server.URL
-	solo := &fakeSoloCall{outputs: []string{"\n❯\n"}}
+	solo := &fakeSoloCall{outputs: []string{"┃ Ask anything, / for commands, @ for context…"}}
 	launcher := NewSoloLauncher(solo, time.Second)
 	launcher.pollInterval = time.Millisecond
 	if err := NewRunner(config, NewClient(config, "bound-secret"), launcher, staticHealth{}, nil).Run(context.Background()); err != nil {

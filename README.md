@@ -129,7 +129,9 @@ reports that exact process idle. Leaf items always spawn the role's configured t
 
 Every Solo session reference contains the server-authoritative spoke id, Solo project and process
 ids, launch nonce, harness, and agent-tool id. It contains no bearer, signed URL, or prompt. Initial
-spawns use a fresh UUIDv7 nonce. A server `respawn` directive supplies the replacement nonce.
+spawns use the claim's server-issued UUIDv7 nonce. A server `respawn` directive supplies the
+replacement nonce. On a warm orchestrator wake, the session reference keeps the process's original
+nonce while the signed pointer and `delivered` transition use the newly claimed item's nonce.
 `send_enter`, `resend_pointer`, and `respawn` run only when the server returns them.
 
 Setup can print the launchd or systemd files, or install and activate only Capstan's dedicated user

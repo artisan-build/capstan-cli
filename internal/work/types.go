@@ -88,9 +88,9 @@ type Launcher interface {
 	Launch(context.Context, LaunchSpec) (string, error)
 	Alive(context.Context, string) (bool, error)
 	Terminate(context.Context, string) error
-	OpenGate(context.Context, string, string) error
-	SendEnter(context.Context, string, string, string) error
-	ResendPointer(context.Context, string, string, string) error
+	OpenGate(context.Context, string, string, string) error
+	SendEnter(context.Context, string, string, string, string) error
+	ResendPointer(context.Context, string, string, string, string) error
 }
 
 // Logger receives redacted operational messages.

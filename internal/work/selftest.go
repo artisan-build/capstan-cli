@@ -34,8 +34,9 @@ func (e SelfTestEvidence) Validate() error {
 
 // SoloSelfTester runs the configured Solo path against a local harmless Work stub.
 type SoloSelfTester struct {
-	Timeout time.Duration
-	Tick    func(context.Context, string) error
+	Timeout   time.Duration
+	Tick      func(context.Context, string) error
+	Terminate func(context.Context, Config, string) error
 }
 
 type selfTestStub struct {
@@ -66,7 +67,10 @@ func (s SoloSelfTester) Run(ctx context.Context, config Config, output io.Writer
 	if err != nil {
 		return SelfTestEvidence{}, err
 	}
-	defer cleanup()
+	defer func() {
+		s.cleanupSession(configPath, nonce)
+		cleanup()
+	}()
 	tick := s.Tick
 	if tick == nil {
 		tick = func(ctx context.Context, path string) error { return Execute(ctx, path, nil, nil, nil) }
@@ -98,6 +102,43 @@ func (s SoloSelfTester) Run(ctx context.Context, config Config, output io.Writer
 			return last, errors.New("work self-test timed out before every rung was observed")
 		case <-time.After(time.Second):
 		}
+	}
+}
+
+func (s SoloSelfTester) cleanupSession(configPath, nonce string) {
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		return
+	}
+	state, err := NewStateStore(config.StateFile, config.WorkDir).Load()
+	if err != nil {
+		return
+	}
+	binding := config.SoloBindings["orchestrator"]
+	for _, item := range state.Items {
+		if item == nil || item.SessionRef == "" {
+			continue
+		}
+		ref, err := ParseSoloSessionRef(item.SessionRef)
+		if err != nil || ref.LaunchNonce != nonce || ref.SpokeID != item.SpokeID || ref.SoloProjectID != binding.ProjectID || ref.AgentToolID != binding.AgentToolID || ref.Harness != binding.Harness {
+			continue
+		}
+		timeout := config.SoloCallTimeout
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		if s.Terminate != nil {
+			_ = s.Terminate(ctx, config, item.SessionRef)
+			cancel()
+			continue
+		}
+		client, clientErr := NewStdioSoloClient(ctx, config.SoloMCPPath, timeout)
+		if clientErr == nil {
+			_ = NewSoloLauncher(client, config.SoloReadyTimeout).Terminate(ctx, item.SessionRef)
+			_ = client.Close()
+		}
+		cancel()
 	}
 }
 

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +94,74 @@ func TestSoloSelfTesterObservesEveryRungAndFailsClosed(t *testing.T) {
 			t.Fatalf("evidence, error = %#v, %v", evidence, err)
 		}
 	})
+}
+
+func TestSoloSelfTesterClosesExactSpawnedSessionBeforeTemporaryStateRemoval(t *testing.T) {
+	for _, mode := range []string{"error", "timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			config := testSoloConfig(t)
+			config.SoloMCPPath = "/fake/solo-mcp"
+			config.SoloCallTimeout = time.Second
+			var configPath, wantRef string
+			terminated := false
+			timeout := time.Second
+			if mode == "timeout" {
+				timeout = 200 * time.Millisecond
+			}
+			tester := SoloSelfTester{
+				Timeout: timeout,
+				Tick: func(ctx context.Context, path string) error {
+					configPath = path
+					loaded, err := LoadConfig(path)
+					if err != nil {
+						return err
+					}
+					claim := selfTestHTTP(t, ctx, loaded, http.MethodPost, "/api/v1/work/self-test/claim", `{}`)
+					var response ClaimResponse
+					if err := json.Unmarshal(claim, &response); err != nil {
+						return err
+					}
+					nonce := response.Items[0].LaunchNonce
+					wantRef, err = (SoloSessionRef{SpokeID: 1, SoloProjectID: 12, SoloProcessID: 77, LaunchNonce: nonce, Harness: "claude", AgentToolID: 13}).String()
+					if err != nil {
+						return err
+					}
+					workDir := filepath.Join(loaded.WorkDir, testSelfItemID+"-f1")
+					if err := os.MkdirAll(workDir, 0o700); err != nil {
+						return err
+					}
+					state := State{Version: stateVersion, Items: map[string]*ItemState{testSelfItemID: {TaskID: testSelfTaskID, Role: "orchestrator", Fence: 1, Phase: "launched", WorkDir: workDir, LaunchNonce: nonce, SessionRef: wantRef, SpokeID: 1}}}
+					if err := NewStateStore(loaded.StateFile, loaded.WorkDir).Save(state); err != nil {
+						return err
+					}
+					if mode == "timeout" {
+						<-ctx.Done()
+						return ctx.Err()
+					}
+					return errors.New("failure after spawn")
+				},
+				Terminate: func(_ context.Context, loaded Config, ref string) error {
+					if _, err := os.Stat(loaded.StateFile); err != nil {
+						t.Fatalf("temporary state disappeared before termination: %v", err)
+					}
+					if ref != wantRef {
+						t.Fatalf("terminated ref = %q, want %q", ref, wantRef)
+					}
+					terminated = true
+					return nil
+				},
+			}
+			if _, err := tester.Run(context.Background(), config, io.Discard); err == nil {
+				t.Fatal("post-spawn failure passed")
+			}
+			if !terminated {
+				t.Fatal("spawned self-test session was not terminated")
+			}
+			if _, err := os.Stat(filepath.Dir(configPath)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("temporary state remains after termination: %v", err)
+			}
+		})
+	}
 }
 
 func selfTestHTTP(t *testing.T, ctx context.Context, config Config, method, path, body string) []byte {

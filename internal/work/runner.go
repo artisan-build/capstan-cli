@@ -293,7 +293,7 @@ func (r *Runner) ensureRouted(ctx context.Context, state *State, id string) erro
 		}
 	}
 	if item.Phase == "routed" {
-		if err := r.launcher.OpenGate(ctx, item.SessionRef, filepath.Join(item.WorkDir, gateFilename)); err != nil {
+		if err := r.launcher.OpenGate(ctx, item.SessionRef, filepath.Join(item.WorkDir, gateFilename), item.LaunchNonce); err != nil {
 			return errors.New("launcher gate could not be opened")
 		}
 	}
@@ -423,7 +423,7 @@ func (r *Runner) executeDirective(ctx context.Context, state *State, directive D
 	item := state.Items[directive.ItemID]
 	switch directive.Kind {
 	case "send_enter":
-		return r.launcher.SendEnter(ctx, item.SessionRef, filepath.Join(item.WorkDir, linksFilename), directive.ID)
+		return r.launcher.SendEnter(ctx, item.SessionRef, filepath.Join(item.WorkDir, linksFilename), item.LaunchNonce, directive.ID)
 	case "resend_pointer":
 		if err := validateLinks(item.Role, directive.Links); err != nil {
 			return err
@@ -431,7 +431,7 @@ func (r *Runner) executeDirective(ctx context.Context, state *State, directive D
 		if err := r.writeLinks(item, directive.Links); err != nil {
 			return err
 		}
-		return r.launcher.ResendPointer(ctx, item.SessionRef, filepath.Join(item.WorkDir, linksFilename), directive.ID)
+		return r.launcher.ResendPointer(ctx, item.SessionRef, filepath.Join(item.WorkDir, linksFilename), item.LaunchNonce, directive.ID)
 	case "respawn":
 		if !validUUIDv7(directive.Payload.LaunchNonce) {
 			return errors.New("respawn directive has an invalid launch nonce")
@@ -463,7 +463,7 @@ func (r *Runner) executeDirective(ctx context.Context, state *State, directive D
 		if err := r.establish(ctx, state, directive.ItemID, "directive:"+directive.ID, ""); err != nil {
 			return err
 		}
-		if err := r.launcher.OpenGate(ctx, item.SessionRef, filepath.Join(item.WorkDir, gateFilename)); err != nil {
+		if err := r.launcher.OpenGate(ctx, item.SessionRef, filepath.Join(item.WorkDir, gateFilename), item.LaunchNonce); err != nil {
 			_ = r.launcher.Terminate(ctx, item.SessionRef)
 			item.SessionRef = ""
 			item.Phase = "claimed"

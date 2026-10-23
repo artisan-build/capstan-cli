@@ -18,8 +18,9 @@ import (
 const maxPointerBytes = 299
 
 var (
-	readyMarker         = regexp.MustCompile(`(?m)^\s*[│|]?\s*[❯›>]\s*$`)
-	openCodeReadyMarker = regexp.MustCompile(`(?m)^\s*┃\s+Ask anything, / for commands, @ for context…\s*$`)
+	claudeReadyMarker   = regexp.MustCompile(`(?m)^[ \t]*❯[ \t]*\r?\n(?:[^\r\n]*\r?\n){0,3}[ \t]*\?[ \t]+for shortcuts[ \t]*$`)
+	codexReadyMarker    = regexp.MustCompile(`(?m)^[ \t]*›[ \t]+Ask Codex to do anything[ \t]*$`)
+	openCodeReadyMarker = regexp.MustCompile(`(?m)^[ \t]*┃[ \t]+Ask anything, / for commands, @ for context…[ \t]*$`)
 )
 
 // SoloSessionRef is the canonical, non-secret identity handed to Capstan.
@@ -96,7 +97,7 @@ func (l *SoloLauncher) Launch(ctx context.Context, spec LaunchSpec) (string, err
 	if spec.ExistingSessionRef != "" {
 		ref, err := ParseSoloSessionRef(spec.ExistingSessionRef)
 		if err != nil || ref.SpokeID != spec.SpokeID || ref.SoloProjectID != binding.ProjectID || ref.AgentToolID != binding.AgentToolID ||
-			ref.LaunchNonce != spec.LaunchNonce || ref.Harness != binding.Harness {
+			ref.Harness != binding.Harness {
 			return "", errors.New("reusable Solo session identity does not match the current claim")
 		}
 		if err := l.waitIdle(ctx, ref); err != nil {
@@ -159,16 +160,19 @@ func (l *SoloLauncher) Terminate(ctx context.Context, sessionRef string) error {
 	return l.close(ctx, ref)
 }
 
-func (l *SoloLauncher) OpenGate(ctx context.Context, sessionRef, gatePath string) error {
+func (l *SoloLauncher) OpenGate(ctx context.Context, sessionRef, gatePath, deliveryNonce string) error {
 	ref, err := ParseSoloSessionRef(sessionRef)
-	if err != nil {
+	if err != nil || !validUUIDv7(deliveryNonce) {
+		if err == nil {
+			err = errors.New("solo delivery nonce is invalid")
+		}
 		return err
 	}
-	marker := gatePath + "." + ref.LaunchNonce
+	marker := gatePath + "." + deliveryNonce
 	if data, err := os.ReadFile(marker); err == nil && string(data) == sessionRef+"\n" {
 		return nil
 	}
-	pointer, err := pointerFromLinks(filepath.Join(filepath.Dir(gatePath), linksFilename), ref.LaunchNonce)
+	pointer, err := pointerFromLinks(filepath.Join(filepath.Dir(gatePath), linksFilename), deliveryNonce)
 	if err != nil {
 		return err
 	}
@@ -187,12 +191,15 @@ func (l *SoloLauncher) OpenGate(ctx context.Context, sessionRef, gatePath string
 	return nil
 }
 
-func (l *SoloLauncher) SendEnter(ctx context.Context, sessionRef, linksPath, _ string) error {
+func (l *SoloLauncher) SendEnter(ctx context.Context, sessionRef, linksPath, deliveryNonce, _ string) error {
 	ref, err := ParseSoloSessionRef(sessionRef)
-	if err != nil {
+	if err != nil || !validUUIDv7(deliveryNonce) {
+		if err == nil {
+			err = errors.New("solo delivery nonce is invalid")
+		}
 		return err
 	}
-	pointer, err := pointerFromLinks(linksPath, ref.LaunchNonce)
+	pointer, err := pointerFromLinks(linksPath, deliveryNonce)
 	if err != nil {
 		return err
 	}
@@ -206,12 +213,15 @@ func (l *SoloLauncher) SendEnter(ctx context.Context, sessionRef, linksPath, _ s
 	return l.sendBytes(ctx, ref, []int{13})
 }
 
-func (l *SoloLauncher) ResendPointer(ctx context.Context, sessionRef, linksPath, _ string) error {
+func (l *SoloLauncher) ResendPointer(ctx context.Context, sessionRef, linksPath, deliveryNonce, _ string) error {
 	ref, err := ParseSoloSessionRef(sessionRef)
-	if err != nil {
+	if err != nil || !validUUIDv7(deliveryNonce) {
+		if err == nil {
+			err = errors.New("solo delivery nonce is invalid")
+		}
 		return err
 	}
-	pointer, err := pointerFromLinks(linksPath, ref.LaunchNonce)
+	pointer, err := pointerFromLinks(linksPath, deliveryNonce)
 	if err != nil {
 		return err
 	}
@@ -247,8 +257,14 @@ func (l *SoloLauncher) waitReady(ctx context.Context, ref SoloSessionRef, allowT
 			time.Sleep(l.pollInterval)
 			continue
 		}
-		if readyMarker.MatchString(output) || openCodeReadyMarker.MatchString(output) || strings.Contains(output, "? for shortcuts") {
-			return nil
+		if readyForHarness(ref.Harness, output) {
+			status, statusErr := l.currentStatus(ctx, ref)
+			if statusErr != nil {
+				return statusErr
+			}
+			if status.AgentState.Idle {
+				return nil
+			}
 		}
 		time.Sleep(l.pollInterval)
 	}
@@ -297,6 +313,9 @@ func (l *SoloLauncher) status(ctx context.Context, ref SoloSessionRef) (soloProc
 }
 
 func (l *SoloLauncher) output(ctx context.Context, ref SoloSessionRef) (string, error) {
+	if _, err := l.currentStatus(ctx, ref); err != nil {
+		return "", err
+	}
 	var output string
 	if err := l.client.Call(ctx, "get_process_output", map[string]any{"process_id": ref.SoloProcessID, "project_id": ref.SoloProjectID, "lines": 60}, &output); err != nil {
 		return "", errors.New("solo process output could not be read")
@@ -314,6 +333,9 @@ func (l *SoloLauncher) sendBytes(ctx context.Context, ref SoloSessionRef, value 
 
 func (l *SoloLauncher) send(ctx context.Context, ref SoloSessionRef, arguments map[string]any) error {
 	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := l.currentStatus(ctx, ref); err != nil {
+			return err
+		}
 		if err := l.client.Call(ctx, "send_input", arguments, nil); err == nil {
 			return nil
 		}
@@ -338,6 +360,30 @@ func (l *SoloLauncher) close(ctx context.Context, ref SoloSessionRef) error {
 
 func statusMatchesRef(status soloProcessStatus, ref SoloSessionRef) bool {
 	return status.ID == ref.SoloProcessID && status.Kind == "agent" && strings.HasPrefix(status.Name, "capstan-") && strings.HasSuffix(status.Name, "-"+ref.LaunchNonce)
+}
+
+func (l *SoloLauncher) currentStatus(ctx context.Context, ref SoloSessionRef) (soloProcessStatus, error) {
+	status, err := l.status(ctx, ref)
+	if err != nil {
+		return soloProcessStatus{}, err
+	}
+	if status.Status != "Running" || !statusMatchesRef(status, ref) {
+		return soloProcessStatus{}, errors.New("solo process identity changed")
+	}
+	return status, nil
+}
+
+func readyForHarness(harness, output string) bool {
+	switch harness {
+	case "claude":
+		return claudeReadyMarker.MatchString(output)
+	case "codex":
+		return codexReadyMarker.MatchString(output)
+	case "opencode":
+		return openCodeReadyMarker.MatchString(output)
+	default:
+		return false
+	}
 }
 
 func pointerFromLinks(path, nonce string) (string, error) {

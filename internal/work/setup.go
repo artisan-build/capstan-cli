@@ -76,8 +76,10 @@ type SelfTestRunner interface {
 	Run(context.Context, Config, io.Writer) (SelfTestEvidence, error)
 }
 
+var setupInstallWorkSchedule = InstallWorkSchedule
+
 // Setup discovers immutable Solo ids, writes a private config, emits the schedule, and runs the self-test.
-func Setup(ctx context.Context, options SetupOptions, input io.Reader, output io.Writer, solo SoloCaller, tester SelfTestRunner) error {
+func Setup(ctx context.Context, options SetupOptions, input io.Reader, output io.Writer, solo SoloCaller, tester SelfTestRunner) (returnErr error) {
 	if solo == nil || tester == nil {
 		return errors.New("work setup requires Solo discovery and self-test drivers")
 	}
@@ -104,32 +106,44 @@ func Setup(ctx context.Context, options SetupOptions, input io.Reader, output io
 	if err := completeSetupOptions(&options, input, output, projects, tools); err != nil {
 		return err
 	}
-	config, err := writeSetupConfig(options)
+	plan, err := stageSetupConfig(options)
 	if err != nil {
 		return err
 	}
-	schedule, err := RenderWorkSchedule(options.Platform, options.Executable, config.Path)
+	defer plan.cleanup()
+	schedule, err := RenderWorkSchedule(options.Platform, options.Executable, plan.configPath)
 	if err != nil {
 		return err
 	}
 	if options.Schedule == "install" {
-		if err := InstallWorkSchedule(options.Platform, schedule); err != nil {
+		if err := validateWorkScheduleTargets(options.Platform, schedule); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(output, "Installed the Capstan Work one-shot schedule."); err != nil {
-			return errors.New("work setup output could not be written")
-		}
-	} else {
-		if _, err := fmt.Fprint(output, schedule.Text); err != nil {
-			return errors.New("work setup output could not be written")
-		}
 	}
-	evidence, err := tester.Run(ctx, config, output)
+	release, err := lockSetupReplacement(plan)
+	if err != nil {
+		return err
+	}
+	defer func() { returnErr = errors.Join(returnErr, release()) }()
+	evidence, err := tester.Run(ctx, plan.stagedConfig, output)
 	if err != nil {
 		return err
 	}
 	if err := evidence.Validate(); err != nil {
 		return err
+	}
+	if err := commitSetupConfig(plan); err != nil {
+		return err
+	}
+	if options.Schedule == "install" {
+		if err := setupInstallWorkSchedule(options.Platform, schedule); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(output, "Installed the Capstan Work one-shot schedule."); err != nil {
+			return errors.New("work setup output could not be written")
+		}
+	} else if _, err := fmt.Fprint(output, schedule.Text); err != nil {
+		return errors.New("work setup output could not be written")
 	}
 	if _, err := fmt.Fprintln(output, "Self-test passed: claim, spawn, brief fetch, milestone, and done were observed."); err != nil {
 		return errors.New("work setup output could not be written")
@@ -336,37 +350,33 @@ func validateBindingsInstalled(bindings map[string]SoloBinding, projects []SoloP
 	return nil
 }
 
-func writeSetupConfig(options SetupOptions) (Config, error) {
+type setupPlan struct {
+	configPath       string
+	promptPath       string
+	orchestratorPath string
+	statePath        string
+	workDir          string
+	lockPath         string
+	configData       []byte
+	promptData       []byte
+	orchestratorData []byte
+	stagedConfig     Config
+	cleanup          func()
+}
+
+func stageSetupConfig(options SetupOptions) (setupPlan, error) {
 	abs, err := filepath.Abs(options.ConfigPath)
 	if err != nil {
-		return Config{}, errors.New("work config path could not be resolved")
-	}
-	if _, statErr := os.Stat(abs); statErr == nil {
-		existing, loadErr := LoadConfig(abs)
-		if loadErr != nil {
-			return Config{}, errors.New("refusing to replace an unreadable existing work config")
-		}
-		state, stateErr := NewStateStore(existing.StateFile, existing.WorkDir).Load()
-		if stateErr != nil || len(state.Items) != 0 {
-			return Config{}, errors.New("refusing to replace work config while local claims or unreadable state remain")
-		}
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return Config{}, errors.New("existing work config could not be inspected")
+		return setupPlan{}, errors.New("work config path could not be resolved")
 	}
 	dir := filepath.Dir(abs)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Config{}, errors.New("work config directory could not be created")
+	credential, err := resolveSetupPath(dir, options.CredentialFile)
+	if err != nil {
+		return setupPlan{}, errors.New("work credential path could not be resolved")
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return Config{}, errors.New("work config directory could not be secured")
-	}
-	prompt := filepath.Join(dir, "work-prompt.md")
-	orchestratorPrompt := filepath.Join(dir, "orchestrator-prompt.md")
-	if err := atomicPrivateWrite(prompt, []byte("Fetch the current signed brief with the launch nonce from the Solo pointer.\n")); err != nil {
-		return Config{}, err
-	}
-	if err := atomicPrivateWrite(orchestratorPrompt, []byte("Fetch the current signed orchestrator brief with the launch nonce from the Solo pointer.\n")); err != nil {
-		return Config{}, err
+	soloMCP, err := resolveSetupPath(dir, options.SoloMCPPath)
+	if err != nil {
+		return setupPlan{}, errors.New("solo MCP path could not be resolved")
 	}
 	roles := make([]string, 0, len(options.Bindings))
 	providers := make(map[string]string, len(options.Bindings))
@@ -377,18 +387,121 @@ func writeSetupConfig(options SetupOptions) (Config, error) {
 	sort.Strings(roles)
 	raw := rawConfig{
 		Version: 2, Launcher: "solo", CapstanURL: options.CapstanURL, Team: options.Team, ActorID: options.ActorID,
-		CredentialFile: options.CredentialFile, MaxConcurrent: &options.MaxConcurrent, OrchestratorCapacity: &options.OrchestratorCapacity,
+		CredentialFile: credential, MaxConcurrent: &options.MaxConcurrent, OrchestratorCapacity: &options.OrchestratorCapacity,
 		MaxLoad1m: 8, MaxMemoryPercent: 85, Capabilities: []string{}, Roles: roles, RoleProviders: providers,
-		StateFile: filepath.Join(dir, "var", "work-state.json"), WorkDir: filepath.Join(dir, "var", "work-items"), LockFile: filepath.Join(dir, "var", "work.lock"),
-		PromptTemplate: prompt, OrchestratorPromptTemplate: orchestratorPrompt, SoloMCPPath: options.SoloMCPPath,
+		StateFile: filepath.Join("var", "work-state.json"), WorkDir: filepath.Join("var", "work-items"), LockFile: filepath.Join("var", "work.lock"),
+		PromptTemplate: "work-prompt.md", OrchestratorPromptTemplate: "orchestrator-prompt.md", SoloMCPPath: soloMCP,
 		SoloCallTimeoutSeconds: 30, SoloReadyTimeoutSeconds: 120, SoloBindings: options.Bindings, RequestTimeoutSeconds: 15,
 	}
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
-		return Config{}, errors.New("work config could not be encoded")
+		return setupPlan{}, errors.New("work config could not be encoded")
 	}
-	if err := atomicPrivateWrite(abs, append(data, '\n')); err != nil {
-		return Config{}, errors.New("work config could not be written")
+	data = append(data, '\n')
+	root, err := os.MkdirTemp("", "capstan-work-setup-*")
+	if err != nil {
+		return setupPlan{}, errors.New("work setup staging directory could not be created")
 	}
-	return LoadConfig(abs)
+	cleanup := func() { _ = os.RemoveAll(root) }
+	promptData := []byte("Fetch the current signed brief with the launch nonce from the Solo pointer.\n")
+	orchestratorData := []byte("Fetch the current signed orchestrator brief with the launch nonce from the Solo pointer.\n")
+	if err := atomicPrivateWrite(filepath.Join(root, "work-prompt.md"), promptData); err != nil {
+		cleanup()
+		return setupPlan{}, errors.New("staged work prompt could not be written")
+	}
+	if err := atomicPrivateWrite(filepath.Join(root, "orchestrator-prompt.md"), orchestratorData); err != nil {
+		cleanup()
+		return setupPlan{}, errors.New("staged orchestrator prompt could not be written")
+	}
+	stagedPath := filepath.Join(root, filepath.Base(abs))
+	if err := atomicPrivateWrite(stagedPath, data); err != nil {
+		cleanup()
+		return setupPlan{}, errors.New("staged work config could not be written")
+	}
+	config, err := LoadConfig(stagedPath)
+	if err != nil {
+		cleanup()
+		return setupPlan{}, err
+	}
+	return setupPlan{
+		configPath: abs, promptPath: filepath.Join(dir, "work-prompt.md"), orchestratorPath: filepath.Join(dir, "orchestrator-prompt.md"),
+		statePath: filepath.Join(dir, "var", "work-state.json"), workDir: filepath.Join(dir, "var", "work-items"), lockPath: filepath.Join(dir, "var", "work.lock"),
+		configData: data, promptData: promptData, orchestratorData: orchestratorData, stagedConfig: config, cleanup: cleanup,
+	}, nil
+}
+
+func resolveSetupPath(dir, value string) (string, error) {
+	if strings.HasPrefix(value, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
+	}
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(dir, value)
+	}
+	return filepath.Abs(value)
+}
+
+func lockSetupReplacement(plan setupPlan) (func() error, error) {
+	var existing *Config
+	if _, err := os.Stat(plan.configPath); err == nil {
+		loaded, loadErr := LoadConfig(plan.configPath)
+		if loadErr != nil {
+			return nil, errors.New("refusing to replace an unreadable existing work config")
+		}
+		existing = &loaded
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, errors.New("existing work config could not be inspected")
+	}
+	lockPaths := []string{plan.lockPath}
+	if existing != nil && existing.LockFile != plan.lockPath {
+		lockPaths = append(lockPaths, existing.LockFile)
+	}
+	sort.Strings(lockPaths)
+	locks := make([]*Lock, 0, len(lockPaths))
+	release := func() error {
+		var result error
+		for index := len(locks) - 1; index >= 0; index-- {
+			result = errors.Join(result, locks[index].Release())
+		}
+		return result
+	}
+	for _, path := range lockPaths {
+		lock, err := AcquireLock(path)
+		if err != nil {
+			_ = release()
+			if errors.Is(err, ErrLockHeld) {
+				return nil, errors.New("refusing to replace work config while a drain holds the overlap lock")
+			}
+			return nil, err
+		}
+		locks = append(locks, lock)
+	}
+	stores := []*StateStore{NewStateStore(plan.statePath, plan.workDir)}
+	if existing != nil && (existing.StateFile != plan.statePath || existing.WorkDir != plan.workDir) {
+		stores = append(stores, NewStateStore(existing.StateFile, existing.WorkDir))
+	}
+	for _, store := range stores {
+		state, err := store.Load()
+		if err != nil || len(state.Items) != 0 {
+			_ = release()
+			return nil, errors.New("refusing to replace work config while local claims or unreadable state remain")
+		}
+	}
+	return release, nil
+}
+
+func commitSetupConfig(plan setupPlan) error {
+	if err := atomicPrivateWrite(plan.promptPath, plan.promptData); err != nil {
+		return errors.New("work prompt could not be written")
+	}
+	if err := atomicPrivateWrite(plan.orchestratorPath, plan.orchestratorData); err != nil {
+		return errors.New("orchestrator prompt could not be written")
+	}
+	if err := atomicPrivateWrite(plan.configPath, plan.configData); err != nil {
+		return errors.New("work config could not be written")
+	}
+	return nil
 }

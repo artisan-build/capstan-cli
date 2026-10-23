@@ -56,7 +56,7 @@ spoke id. Local configuration and request fields cannot replace it.
 
 A new leaf or cold orchestrator launch follows this sequence:
 
-1. Spawn the configured Solo agent tool with a fresh UUIDv7 launch nonce.
+1. Spawn the configured Solo agent tool with the claim's server-issued UUIDv7 launch nonce.
 2. Wait for the harness prompt. If Solo shows the folder-trust screen, send Down and Enter as separate
    inputs, then wait for the prompt again.
 3. Record `delivered` and `routed` with Capstan.
@@ -67,9 +67,11 @@ The full brief, bearer, and signed links never enter argv, process names, the gl
 errors. Signed links stay in the item directory's private `links.json`. The session reference contains
 only `{spoke_id, solo_project_id, solo_process_id, launch_nonce, harness, agent_tool_id}`.
 
-An orchestrator session is reusable only when the server returns its receipt-bound reference, the
-reference nonce matches the current claim, Solo reports the exact process alive, and Solo reports it
-idle. Idle does not mean finished. Leaf work never reuses a seat.
+An orchestrator session is reusable only when the server returns its receipt-bound reference, Solo
+reports the exact referenced process alive, and Solo reports it idle. The reference keeps the nonce
+that named the process when it was spawned. A warm wake uses the current item's separate nonce in
+the signed pointer and `delivered` transition. Idle does not mean finished. Leaf work never reuses a
+seat.
 
 Capstan chooses repair actions. The drain has no repair timer or local retry ladder:
 

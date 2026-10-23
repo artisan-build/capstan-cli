@@ -28,6 +28,7 @@ type StdioSoloClient struct {
 	stdin     io.WriteCloser
 	messages  chan rpcMessage
 	readError chan error
+	waitDone  chan struct{}
 	timeout   time.Duration
 	mu        sync.Mutex
 	nextID    int64
@@ -52,8 +53,12 @@ func NewStdioSoloClient(ctx context.Context, path string, timeout time.Duration)
 		return nil, errors.New("solo MCP process could not be started")
 	}
 	client := &StdioSoloClient{
-		command: command, stdin: stdin, messages: make(chan rpcMessage, 8), readError: make(chan error, 1), timeout: timeout,
+		command: command, stdin: stdin, messages: make(chan rpcMessage, 8), readError: make(chan error, 1), waitDone: make(chan struct{}), timeout: timeout,
 	}
+	go func() {
+		_ = command.Wait()
+		close(client.waitDone)
+	}()
 	go client.read(stdout)
 	var initialized json.RawMessage
 	if err := client.rpc(ctx, "initialize", map[string]any{
@@ -63,7 +68,7 @@ func NewStdioSoloClient(ctx context.Context, path string, timeout time.Duration)
 		_ = client.Close()
 		return nil, err
 	}
-	if err := client.notify("notifications/initialized", map[string]any{}); err != nil {
+	if err := client.notify(ctx, "notifications/initialized", map[string]any{}); err != nil {
 		_ = client.Close()
 		return nil, err
 	}
@@ -104,6 +109,8 @@ func (c *StdioSoloClient) read(stdout io.Reader) {
 }
 
 func (c *StdioSoloClient) rpc(ctx context.Context, method string, params any, target any) error {
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -117,15 +124,13 @@ func (c *StdioSoloClient) rpc(ctx context.Context, method string, params any, ta
 		return errors.New("solo MCP request could not be encoded")
 	}
 	data = append(data, '\n')
-	if _, err := c.stdin.Write(data); err != nil {
-		return errors.New("solo MCP request could not be written")
+	if err := c.writeLocked(callCtx, data); err != nil {
+		return err
 	}
-	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
 	for {
 		select {
 		case <-callCtx.Done():
-			_ = c.command.Process.Kill()
+			c.abortLocked()
 			return errors.New("solo MCP request timed out")
 		case <-c.readError:
 			return errors.New("solo MCP closed before replying")
@@ -147,16 +152,50 @@ func (c *StdioSoloClient) rpc(ctx context.Context, method string, params any, ta
 	}
 }
 
-func (c *StdioSoloClient) notify(method string, params any) error {
+func (c *StdioSoloClient) notify(ctx context.Context, method string, params any) error {
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return errors.New("solo MCP client is closed")
+	}
 	data, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
 	if err != nil {
 		return errors.New("solo MCP notification could not be encoded")
 	}
-	_, err = c.stdin.Write(append(data, '\n'))
-	if err != nil {
-		return errors.New("solo MCP notification could not be written")
+	return c.writeLocked(callCtx, append(data, '\n'))
+}
+
+func (c *StdioSoloClient) writeLocked(ctx context.Context, data []byte) error {
+	written := make(chan error, 1)
+	go func() {
+		_, err := c.stdin.Write(data)
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			return errors.New("solo MCP request could not be written")
+		}
+		return nil
+	case <-ctx.Done():
+		c.abortLocked()
+		<-written
+		return errors.New("solo MCP request timed out")
 	}
-	return nil
+}
+
+func (c *StdioSoloClient) abortLocked() {
+	if !c.closed {
+		c.closed = true
+		_ = c.stdin.Close()
+		_ = c.command.Process.Kill()
+	}
+	select {
+	case <-c.waitDone:
+	case <-time.After(2 * time.Second):
+	}
 }
 
 // Call invokes one Solo MCP tool and decodes its text result as JSON.
@@ -196,21 +235,7 @@ func (c *StdioSoloClient) Call(ctx context.Context, name string, arguments any, 
 // Close terminates the disposable stdio MCP process.
 func (c *StdioSoloClient) Close() error {
 	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return nil
-	}
-	c.closed = true
-	_ = c.stdin.Close()
+	c.abortLocked()
 	c.mu.Unlock()
-	done := make(chan error, 1)
-	go func() { done <- c.command.Wait() }()
-	select {
-	case <-done:
-		return nil
-	case <-time.After(2 * time.Second):
-		_ = c.command.Process.Kill()
-		<-done
-		return nil
-	}
+	return nil
 }

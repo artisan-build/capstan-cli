@@ -80,6 +80,44 @@ for line in sys.stdin:
 	})
 }
 
+func TestStdioSoloClientBoundsBlockedRequestWriteAndReapsPeer(t *testing.T) {
+	path := writeMCPPeer(t, `
+import json, sys, time
+for line in sys.stdin:
+    msg=json.loads(line)
+    if 'id' not in msg: continue
+    if msg['method']=='initialize':
+        result={}
+    else:
+        result={'content':[{'type':'text','text':'{}'}]}
+    print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':result}), flush=True)
+    if msg['method']=='tools/call' and msg['params']['name']=='identify_session':
+        time.sleep(10)
+        break
+`)
+	client, err := NewStdioSoloClient(context.Background(), path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.timeout = 30 * time.Millisecond
+	secret := "signed-secret-" + strings.Repeat("x", 4082)
+	extraArgs := make([]string, 64)
+	for index := range extraArgs {
+		extraArgs[index] = secret
+	}
+	started := time.Now()
+	err = client.Call(context.Background(), "spawn_agent", map[string]any{"extra_args": extraArgs}, nil)
+	if err == nil || time.Since(started) > time.Second || strings.Contains(err.Error(), "signed-secret") {
+		t.Fatalf("error, elapsed = %v, %s", err, time.Since(started))
+	}
+	select {
+	case <-client.waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("blocked-write peer was not reaped")
+	}
+	_ = client.Close()
+}
+
 func TestSoloLauncherReadsRenderedProcessOutputAsText(t *testing.T) {
 	path := writeMCPPeer(t, `
 import json, sys
@@ -89,7 +127,12 @@ for line in sys.stdin:
     if msg['method']=='initialize': result={}
     else:
         name=msg['params']['name']
-        text='┃ Ask anything, / for commands, @ for context…' if name=='get_process_output' else '{}'
+        if name=='get_process_output':
+            text='┃ Ask anything, / for commands, @ for context…'
+        elif name=='get_process_status':
+            text=json.dumps({'id':77,'name':'capstan-builder-018f0000-0000-7000-8000-000000000021','kind':'agent','status':'Running','agent_state':{'idle':True}})
+        else:
+            text='{}'
         result={'content':[{'type':'text','text':text}]}
     print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':result}), flush=True)
 `)
@@ -99,7 +142,7 @@ for line in sys.stdin:
 	}
 	defer func() { _ = client.Close() }()
 	launcher := NewSoloLauncher(client, time.Second)
-	ref := SoloSessionRef{SoloProjectID: 8, SoloProcessID: 77}
+	ref := SoloSessionRef{SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce}
 	got, err := launcher.output(context.Background(), ref)
 	if err != nil {
 		t.Fatal(err)
