@@ -720,7 +720,7 @@ func TestRunnerSoloRoutingIdentityReuseAndColdReplacement(t *testing.T) {
 				return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "orchestrator", Fence: 2, LaunchNonce: testNonce, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
 			},
 		}
-		solo := &fakeSoloCall{status: soloProcessStatus{ID: 66, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Stopped"}, outputs: []string{"❯\n────────────────\n? for shortcuts"}}
+		solo := &fakeSoloCall{status: soloProcessStatus{ID: 66, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Stopped"}, outputs: []string{"────────────────────────────────────────────────────────────────\n❯\n────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent"}}
 		launcher := NewSoloLauncher(solo, time.Second)
 		launcher.pollInterval = time.Millisecond
 		runner := NewRunner(config, api, launcher, staticHealth{}, nil)

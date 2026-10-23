@@ -190,8 +190,9 @@ func TestSoloLauncherIdleWakeAndDirectiveActions(t *testing.T) {
 }
 
 func TestSoloLauncherSelectsCompleteReadyMarkerByHarness(t *testing.T) {
+	claudeMarker := "────────────────────────────────────────────────────────────────\n❯\n────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent"
 	markers := map[string]string{
-		"claude":   "❯\n────────────────\n? for shortcuts",
+		"claude":   claudeMarker,
 		"codex":    "› Ask Codex to do anything",
 		"opencode": "┃ Ask anything, / for commands, @ for context…",
 	}
@@ -210,7 +211,8 @@ func TestSoloLauncherSelectsCompleteReadyMarkerByHarness(t *testing.T) {
 		for label, output := range map[string]string{
 			"claude marker": markers["claude"], "codex marker": markers["codex"], "opencode marker": markers["opencode"],
 			"bare Claude glyph": "❯", "bare Codex glyph": "›", "bare ASCII glyph": ">", "blank working line": "working\n┃",
-			"busy prompt": "❯\n────────────────\nesc to interrupt", "startup fragment": "loading: ? for shortcuts",
+			"incomplete Claude prompt": "❯\n────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+			"startup fragment":         "loading: bypass permissions on (shift+tab to cycle)",
 		} {
 			if output == marker && strings.HasSuffix(label, "marker") {
 				continue
@@ -230,9 +232,13 @@ func TestSoloLauncherSelectsCompleteReadyMarkerByHarness(t *testing.T) {
 	}
 
 	t.Run("busy Claude prompt is rejected even with complete text", func(t *testing.T) {
+		busyMarker := claudeMarker + " · esc to interrupt"
+		if !readyForHarness("claude", busyMarker) {
+			t.Fatal("busy fixture does not exercise the idle-status gate")
+		}
 		ref := SoloSessionRef{SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "claude"}
 		status := soloProcessStatus{ID: 77, Name: "capstan-builder-" + testNonce, Kind: "agent", Status: "Running"}
-		fake := &fakeSoloCall{outputs: []string{markers["claude"]}, status: status}
+		fake := &fakeSoloCall{outputs: []string{busyMarker}, status: status}
 		launcher := NewSoloLauncher(fake, 5*time.Millisecond)
 		launcher.pollInterval = time.Millisecond
 		if err := launcher.waitReady(context.Background(), ref, false); err == nil {

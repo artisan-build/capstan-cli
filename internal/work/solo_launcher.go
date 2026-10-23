@@ -18,7 +18,7 @@ import (
 const maxPointerBytes = 299
 
 var (
-	claudeReadyMarker   = regexp.MustCompile(`(?m)^[ \t]*❯[ \t]*\r?\n(?:[^\r\n]*\r?\n){0,3}[ \t]*\?[ \t]+for shortcuts[ \t]*$`)
+	claudeReadyMarker   = regexp.MustCompile(`(?m)^[ \t]*─{8,}[ \t]*\r?\n[ \t]*❯[ \t]*\r?\n[ \t]*─{8,}[ \t]*\r?\n[^\r\n]*⏵⏵[ \t]+bypass permissions on[ \t]+\(shift\+tab to cycle\)[^\r\n]*$`)
 	codexReadyMarker    = regexp.MustCompile(`(?m)^[ \t]*›[ \t]+Ask Codex to do anything[ \t]*$`)
 	openCodeReadyMarker = regexp.MustCompile(`(?m)^[ \t]*┃[ \t]+Ask anything, / for commands, @ for context…[ \t]*$`)
 )
