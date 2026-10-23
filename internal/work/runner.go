@@ -71,7 +71,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	held := reportHeld(state)
 	response, err := r.api.Claim(ctx, ClaimRequest{
 		Capacity: leafCapacity, OrchestratorCapacity: orchestratorCapacity,
-		Roles: append([]string(nil), r.config.Roles...), Capabilities: append([]string(nil), r.config.Capabilities...),
+		Roles:         append(make([]string, 0, len(r.config.Roles)), r.config.Roles...),
+		Capabilities:  append(make([]string, 0, len(r.config.Capabilities)), r.config.Capabilities...),
 		RoleProviders: cloneStringMap(r.config.RoleProviders), CurrentClaimedItemCount: leafHeld, HeldItems: held,
 	})
 	if err != nil {
@@ -92,9 +93,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 	if err := r.handleDirectives(ctx, &state, response.Directives); err != nil {
-		return err
-	}
-	if err := r.releaseReportedFailedRespawns(ctx, &state, response.Directives); err != nil {
 		return err
 	}
 	for _, claim := range response.Items {
@@ -295,6 +293,9 @@ func (r *Runner) advanceFromServer(state *State, id, serverPhase string) error {
 	if serverIndex < 0 {
 		return errors.New("work renew response contains an invalid item state")
 	}
+	if item.SessionRef == "" && item.PendingLaunchKey != "" {
+		return nil
+	}
 	if serverIndex > localIndex {
 		item.Phase = []string{"claimed", "delivered", "routed"}[serverIndex]
 		return r.store.Save(*state)
@@ -460,25 +461,6 @@ func (r *Runner) executeDirective(ctx context.Context, state *State, directive D
 	default:
 		return errors.New("unsupported directive")
 	}
-}
-
-func (r *Runner) releaseReportedFailedRespawns(ctx context.Context, state *State, directives []Directive) error {
-	returned := make(map[string]struct{}, len(directives))
-	for _, directive := range directives {
-		returned[directive.ItemID] = struct{}{}
-	}
-	for _, id := range sortedItemIDs(*state) {
-		item := state.Items[id]
-		if _, hasDirective := returned[id]; hasDirective || item.SessionRef != "" || item.Directive == nil ||
-			item.Directive.Kind != "respawn" || item.Directive.Status != "failed" || item.Directive.ReportPending {
-			continue
-		}
-		if err := r.release(ctx, state, id); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 func (r *Runner) acknowledgeReported(state *State) error {

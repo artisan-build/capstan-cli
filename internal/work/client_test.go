@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,43 @@ import (
 	"testing"
 	"time"
 )
+
+func TestClientClaimNormalizesNilCollectionsAtWireBoundary(t *testing.T) {
+	tests := []struct {
+		name      string
+		request   ClaimRequest
+		want      string
+		forbidden string
+	}{
+		{name: "roles", request: ClaimRequest{Capabilities: []string{}, RoleProviders: map[string]string{}, HeldItems: []HeldItem{}}, want: `"roles":[]`, forbidden: `"roles":null`},
+		{name: "capabilities", request: ClaimRequest{Roles: []string{"builder"}, RoleProviders: map[string]string{}, HeldItems: []HeldItem{}}, want: `"capabilities":[]`, forbidden: `"capabilities":null`},
+		{name: "role providers", request: ClaimRequest{Roles: []string{"builder"}, Capabilities: []string{}, HeldItems: []HeldItem{}}, want: `"role_providers":{}`, forbidden: `"role_providers":null`},
+		{name: "held items", request: ClaimRequest{Roles: []string{"builder"}, Capabilities: []string{}, RoleProviders: map[string]string{}}, want: `"held_items":[]`, forbidden: `"held_items":null`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var body []byte
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var err error
+				body, err = io.ReadAll(request.Body)
+				if err != nil {
+					t.Fatalf("read claim body: %v", err)
+				}
+				writeJSON(t, writer, ClaimResponse{Items: []ClaimItem{}, Directives: []Directive{}})
+			}))
+			defer server.Close()
+
+			config := testConfig(t)
+			config.CapstanURL = server.URL
+			if _, err := NewClient(config, "secret").Claim(context.Background(), test.request); err != nil {
+				t.Fatalf("Claim() error = %v", err)
+			}
+			if !strings.Contains(string(body), test.want) || strings.Contains(string(body), test.forbidden) {
+				t.Fatalf("claim body = %s, want %s and no %s", body, test.want, test.forbidden)
+			}
+		})
+	}
+}
 
 func TestClientRejectsUnsafeResponsesWithoutLeakingMaterial(t *testing.T) {
 	const (

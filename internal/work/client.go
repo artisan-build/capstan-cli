@@ -156,6 +156,18 @@ func NewClient(config Config, bearer string) *Client {
 
 // Claim sends one explicit split-capacity tick.
 func (c *Client) Claim(ctx context.Context, request ClaimRequest) (ClaimResponse, error) {
+	if request.Roles == nil {
+		request.Roles = []string{}
+	}
+	if request.Capabilities == nil {
+		request.Capabilities = []string{}
+	}
+	if request.RoleProviders == nil {
+		request.RoleProviders = map[string]string{}
+	}
+	if request.HeldItems == nil {
+		request.HeldItems = []HeldItem{}
+	}
 	var response ClaimResponse
 	if err := c.post(ctx, "claim", request, &response); err != nil {
 		return ClaimResponse{}, err

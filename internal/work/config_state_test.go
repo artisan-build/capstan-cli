@@ -4,12 +4,56 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestEmptyCapabilitiesConfigRunsTickWithJSONArray(t *testing.T) {
+	var claimBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if filepath.Base(request.URL.Path) != "claim" {
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+		var err error
+		claimBody, err = io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatalf("read claim body: %v", err)
+		}
+		writeJSON(t, writer, ClaimResponse{Items: []ClaimItem{}, Directives: []Directive{}})
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	prompt := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(prompt, []byte("Read {links_file}."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "work.json")
+	raw := validRawConfig(prompt)
+	raw["capstan_url"] = server.URL
+	raw["capabilities"] = []string{}
+	writeRawConfig(t, path, raw, 0o600)
+
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if config.Capabilities == nil {
+		t.Fatal("LoadConfig() returned nil capabilities for an explicit empty list")
+	}
+	if err := NewRunner(config, NewClient(config, "bound-secret"), &fakeLauncher{}, staticHealth{}, nil).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(string(claimBody), `"capabilities":[]`) || strings.Contains(string(claimBody), `"capabilities":null`) {
+		t.Fatalf("claim body did not preserve empty capabilities array: %s", claimBody)
+	}
+}
 
 func TestLoadConfigStrictPrivateAndXDGDefault(t *testing.T) {
 	root := t.TempDir()

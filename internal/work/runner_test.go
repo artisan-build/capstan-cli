@@ -23,6 +23,7 @@ const (
 	testNonce        = "018f0000-0000-7000-8000-000000000021"
 	testRespawnNonce = "018f0000-0000-7000-8000-000000000022"
 	testDirectiveID  = "018f0000-0000-7000-8000-000000000031"
+	testDirectiveID2 = "018f0000-0000-7000-8000-000000000032"
 )
 
 type staticHealth struct {
@@ -38,6 +39,8 @@ type fakeLauncher struct {
 	alive        map[string]bool
 	aliveErr     error
 	launchErr    error
+	gateErr      error
+	gateErrAt    int
 	terminated   []string
 	gates        []string
 	enters       []string
@@ -91,6 +94,9 @@ func (f *fakeLauncher) OpenGate(_ context.Context, path string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gates = append(f.gates, path)
+	if f.gateErr != nil && len(f.gates) == f.gateErrAt {
+		return f.gateErr
+	}
 
 	return nil
 }
@@ -348,25 +354,122 @@ func TestRunnerDirectiveAuthorityReplayAndFollowingTickOutcome(t *testing.T) {
 		}
 	})
 
-	t.Run("interrupted respawn waits for server replay", func(t *testing.T) {
-		config := testConfig(t)
-		item := seedItem(t, config, testItemID, "builder", "routed", "fake:old")
-		item.Phase = "claimed"
-		item.SessionRef = ""
-		item.PendingLaunchKey = "directive:" + testDirectiveID
-		item.Directive = &DirectiveState{ID: testDirectiveID, Kind: "respawn", Status: "pending"}
-		if err := NewStateStore(config.StateFile, config.WorkDir).Save(State{Version: stateVersion, Items: map[string]*ItemState{testItemID: item}}); err != nil {
-			t.Fatal(err)
+	for _, serverPhase := range []string{"delivered", "routed"} {
+		t.Run("interrupted respawn waits for server replay from "+serverPhase, func(t *testing.T) {
+			config := testConfig(t)
+			item := seedItem(t, config, testItemID, "builder", "routed", "fake:old")
+			item.Phase = "claimed"
+			item.SessionRef = ""
+			item.PendingLaunchKey = "directive:" + testDirectiveID
+			item.Directive = &DirectiveState{ID: testDirectiveID, Kind: "respawn", Status: "pending"}
+			if err := NewStateStore(config.StateFile, config.WorkDir).Save(State{Version: stateVersion, Items: map[string]*ItemState{testItemID: item}}); err != nil {
+				t.Fatal(err)
+			}
+			api := renewedAPI("builder", serverPhase)
+			api.claimFn = func(request ClaimRequest) (ClaimResponse, error) {
+				if len(request.HeldItems) != 1 || request.HeldItems[0].ItemID != testItemID {
+					t.Fatalf("pending respawn held items = %#v", request.HeldItems)
+				}
+				return ClaimResponse{}, nil
+			}
+			launcher := &fakeLauncher{}
+			runner := NewRunner(config, api, launcher, staticHealth{}, nil)
+			for tick := 1; tick <= 2; tick++ {
+				if err := runner.Run(context.Background()); err != nil {
+					t.Fatalf("tick %d error = %v", tick, err)
+				}
+			}
+			if len(api.claims) != 2 {
+				t.Fatalf("claim calls = %d", len(api.claims))
+			}
+			if len(launcher.launches)+len(launcher.enters)+len(launcher.pointers) != 0 {
+				t.Fatalf("interrupted respawn retried without directive: %#v", launcher.launches)
+			}
+			state, err := NewStateStore(config.StateFile, config.WorkDir).Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := state.Items[testItemID]
+			if got == nil || got.Phase != "claimed" || got.SessionRef != "" || got.PendingLaunchKey != "directive:"+testDirectiveID {
+				t.Fatalf("pending respawn state = %#v", got)
+			}
+		})
+	}
+
+	for _, serverPhase := range []string{"delivered", "routed"} {
+		for _, failure := range []string{"launch", "gate"} {
+			t.Run("failed respawn stays held after "+failure+" failure from "+serverPhase, func(t *testing.T) {
+				config := testConfig(t)
+				seedItem(t, config, testItemID, "builder", "routed", "fake:old")
+				api := renewedAPI("builder", serverPhase)
+				claimCount := 0
+				api.claimFn = func(request ClaimRequest) (ClaimResponse, error) {
+					claimCount++
+					switch claimCount {
+					case 1:
+						return ClaimResponse{Directives: []Directive{respawnDirective(testDirectiveID, testRespawnNonce)}}, nil
+					case 2:
+						if len(request.HeldItems) != 1 || request.HeldItems[0].DirectiveID != testDirectiveID || request.HeldItems[0].DirectiveOutcome != "failed" {
+							t.Fatalf("failed respawn outcome = %#v", request.HeldItems)
+						}
+						return ClaimResponse{}, nil
+					case 3:
+						if len(request.HeldItems) != 1 || request.HeldItems[0].ItemID != testItemID || request.HeldItems[0].DirectiveID != "" {
+							t.Fatalf("silent tick held items = %#v", request.HeldItems)
+						}
+						return ClaimResponse{}, nil
+					case 4:
+						if len(request.HeldItems) != 1 || request.HeldItems[0].ItemID != testItemID || request.HeldItems[0].DirectiveID != "" {
+							t.Fatalf("second silent tick held items = %#v", request.HeldItems)
+						}
+						return ClaimResponse{}, nil
+					case 5:
+						if len(request.HeldItems) != 1 || request.HeldItems[0].ItemID != testItemID {
+							t.Fatalf("replay tick held items = %#v", request.HeldItems)
+						}
+						return ClaimResponse{Directives: []Directive{respawnDirective(testDirectiveID2, "018f0000-0000-7000-8000-000000000023")}}, nil
+					default:
+						t.Fatalf("unexpected claim call %d", claimCount)
+						return ClaimResponse{}, nil
+					}
+				}
+				launcher := &fakeLauncher{alive: map[string]bool{"fake:old": true}}
+				if failure == "launch" {
+					launcher.launchErr = errors.New("test respawn launch failure")
+				} else {
+					launcher.gateErr = errors.New("test respawn gate failure")
+					launcher.gateErrAt = 2
+				}
+				runner := NewRunner(config, api, launcher, staticHealth{}, nil)
+				if err := runner.Run(context.Background()); err != nil {
+					t.Fatalf("failure tick error = %v", err)
+				}
+				for tick := 1; tick <= 3; tick++ {
+					if err := runner.Run(context.Background()); err != nil {
+						t.Fatalf("following tick %d error = %v", tick, err)
+					}
+				}
+				if len(api.claims) != 4 || len(api.transitions) != 0 {
+					t.Fatalf("claims=%d transitions=%#v", len(api.claims), api.transitions)
+				}
+				if len(launcher.launches) != 1 {
+					t.Fatalf("launches before replay = %#v", launcher.launches)
+				}
+				state, err := NewStateStore(config.StateFile, config.WorkDir).Load()
+				if err != nil || state.Items[testItemID] == nil {
+					t.Fatalf("held state after silent ticks = %#v, %v", state, err)
+				}
+
+				launcher.launchErr = nil
+				if err := runner.Run(context.Background()); err != nil {
+					t.Fatalf("server replay tick error = %v", err)
+				}
+				if len(launcher.launches) != 2 || launcher.launches[1].LaunchKey != "directive:"+testDirectiveID2 {
+					t.Fatalf("launches after replay = %#v", launcher.launches)
+				}
+			})
 		}
-		api := renewedAPI("builder", "claimed")
-		launcher := &fakeLauncher{}
-		if err := NewRunner(config, api, launcher, staticHealth{}, nil).Run(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if len(launcher.launches)+len(launcher.enters)+len(launcher.pointers) != 0 {
-			t.Fatalf("interrupted respawn retried without directive: %#v", launcher.launches)
-		}
-	})
+	}
 
 	t.Run("send_enter executes once and reports on next tick", func(t *testing.T) {
 		config := testConfig(t)
@@ -608,6 +711,13 @@ func testLinks(base string) map[string]string {
 		"brief": base + "/brief?signature=brief", "milestone": base + "/milestone?signature=milestone",
 		"steers": base + "/steers?signature=steers", "evidence": base + "/evidence?signature=evidence",
 		"orchestration": base + "/orchestration?signature=context", "orchestrate": base + "/orchestrate?signature=action",
+	}
+}
+
+func respawnDirective(id, nonce string) Directive {
+	return Directive{
+		ID: id, ItemID: testItemID, Fence: 1, Kind: "respawn",
+		Payload: DirectivePayload{LaunchNonce: nonce}, Links: testLinks("https://respawn.example"),
 	}
 }
 
