@@ -14,6 +14,14 @@ import (
 
 const maxMCPMessageBytes = 1 << 20
 
+type soloRPCError struct {
+	code int
+}
+
+func (e soloRPCError) Error() string {
+	return fmt.Sprintf("solo MCP method failed (%d)", e.code)
+}
+
 type rpcMessage struct {
 	ID     int64           `json:"id"`
 	Result json.RawMessage `json:"result"`
@@ -139,7 +147,7 @@ func (c *StdioSoloClient) rpc(ctx context.Context, method string, params any, ta
 				continue
 			}
 			if message.Error != nil {
-				return fmt.Errorf("solo MCP method failed (%d)", message.Error.Code)
+				return soloRPCError{code: message.Error.Code}
 			}
 			if target == nil {
 				return nil

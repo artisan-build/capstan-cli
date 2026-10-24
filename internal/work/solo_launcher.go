@@ -84,6 +84,8 @@ type SoloLauncher struct {
 	pollInterval time.Duration
 }
 
+var errSoloProcessUnavailable = errors.New("solo process is unavailable")
+
 // NewSoloLauncher returns a production Solo launcher over an injected MCP caller.
 func NewSoloLauncher(client SoloCaller, readyTimeout time.Duration) *SoloLauncher {
 	return &SoloLauncher{client: client, readyTimeout: readyTimeout, pollInterval: 200 * time.Millisecond}
@@ -146,6 +148,9 @@ func (l *SoloLauncher) Alive(ctx context.Context, sessionRef string) (bool, erro
 		return false, err
 	}
 	status, err := l.status(ctx, ref)
+	if errors.Is(err, errSoloProcessUnavailable) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
@@ -312,6 +317,10 @@ func renderedContains(output, exact string) bool {
 func (l *SoloLauncher) status(ctx context.Context, ref SoloSessionRef) (soloProcessStatus, error) {
 	var status soloProcessStatus
 	if err := l.client.Call(ctx, "get_process_status", map[string]any{"process_id": ref.SoloProcessID, "project_id": ref.SoloProjectID}, &status); err != nil {
+		var rpcErr soloRPCError
+		if errors.As(err, &rpcErr) && rpcErr.code == -32602 {
+			return soloProcessStatus{}, errSoloProcessUnavailable
+		}
 		return soloProcessStatus{}, errors.New("solo process status could not be read")
 	}
 	return status, nil

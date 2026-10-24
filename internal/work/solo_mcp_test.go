@@ -4,6 +4,7 @@ package work
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,6 +151,42 @@ for line in sys.stdin:
 	want := "┃ Ask anything, / for commands, @ for context…"
 	if got != want {
 		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestSoloLauncherTreatsRealMCPMissingStatusAsNotAliveOnly(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		code      int
+		wantError bool
+	}{
+		{name: "missing process", code: -32602},
+		{name: "other method failure", code: -32000, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeMCPPeer(t, fmt.Sprintf(`
+import json, sys
+for line in sys.stdin:
+    msg=json.loads(line)
+    if 'id' not in msg: continue
+    if msg['method']=='initialize': result={}
+    elif msg['params']['name']=='get_process_status':
+        print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'error':{'code':%d,'message':'redacted-detail'}}), flush=True)
+        continue
+    else: result={'content':[{'type':'text','text':'{}'}]}
+    print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':result}), flush=True)
+`, test.code))
+			client, err := NewStdioSoloClient(context.Background(), path, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close() }()
+			ref, _ := (SoloSessionRef{SpokeID: 1, SoloProjectID: 32, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "claude", AgentToolID: 3}).String()
+			alive, err := NewSoloLauncher(client, time.Second).Alive(context.Background(), ref)
+			if alive || (err != nil) != test.wantError || (err != nil && strings.Contains(err.Error(), "redacted-detail")) {
+				t.Fatalf("Alive() = %v, %v", alive, err)
+			}
+		})
 	}
 }
 
