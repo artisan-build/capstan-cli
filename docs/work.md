@@ -46,8 +46,8 @@ Linux. `--schedule install` writes only these dedicated files:
 - macOS: `~/Library/LaunchAgents/com.artisan-build.capstan-work.plist`
 - Linux: `~/.config/systemd/user/capstan-work.service` and `capstan-work.timer`
 
-Install mode refuses to replace unrelated content at those paths. It activates the named launchd job
-or runs `systemctl --user enable --now capstan-work.timer`. Other user jobs are not changed.
+Install mode replaces anything at those dedicated paths with the generated schedule. It activates the named
+launchd job or runs `systemctl --user enable --now capstan-work.timer`. Other user jobs are not changed.
 
 ## Launch and recovery
 
