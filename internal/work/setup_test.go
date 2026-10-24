@@ -239,6 +239,11 @@ func TestScheduleOwnershipRequiresStructuralMarkerAndIdentity(t *testing.T) {
 	}{
 		{"launchd comment and path", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>unrelated.job</string><key>ProgramArguments</key><array><string>/tmp/capstan-work</string></array><!-- com.artisan-build.capstan-work --></dict></plist>`},
 		{"launchd marker with wrong label", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>unrelated.job</string><key>CapstanManaged</key><string>capstan-work/v1</string></dict></plist>`},
+		{"launchd unrelated document root", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><not-a-plist><dict><key>Label</key><string>com.artisan-build.capstan-work</string><key>CapstanManaged</key><string>capstan-work/v1</string></dict></not-a-plist>`},
+		{"launchd multiple document roots", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>com.artisan-build.capstan-work</string><key>CapstanManaged</key><string>capstan-work/v1</string></dict></plist><plist></plist>`},
+		{"launchd multiple top-level dicts", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>com.artisan-build.capstan-work</string><key>CapstanManaged</key><string>capstan-work/v1</string></dict><dict></dict></plist>`},
+		{"launchd duplicate label with mixed value types", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>com.artisan-build.capstan-work</string><key>Label</key><integer>1</integer><key>CapstanManaged</key><string>capstan-work/v1</string></dict></plist>`},
+		{"launchd duplicate marker with mixed value types", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>com.artisan-build.capstan-work</string><key>CapstanManaged</key><string>capstan-work/v1</string><key>CapstanManaged</key><integer>1</integer></dict></plist>`},
 		{"systemd service description and command", "linux", "capstan-work.service", "[Unit]\nDescription=Unrelated monitor for capstan-work\n\n[Service]\nExecStart=/tmp/capstan-work-helper\n"},
 		{"systemd timer comment and target", "linux", "capstan-work.timer", "# capstan-work.timer\n[Unit]\nDescription=Unrelated\n\n[Timer]\nUnit=capstan-work.service\n"},
 		{"systemd ambiguous markers", "linux", "capstan-work.service", "[Unit]\nX-Capstan-Managed=capstan-work/v1\nX-Capstan-Managed=capstan-work/v1\nX-Capstan-Unit=capstan-work.service\n\n[Service]\nExecStart=/tmp/capstan-work\n"},
@@ -254,7 +259,7 @@ func TestScheduleOwnershipRequiresStructuralMarkerAndIdentity(t *testing.T) {
 				t.Fatal("unrelated schedule was accepted")
 			}
 			data, readErr := os.ReadFile(path)
-			if readErr != nil || string(data) != test.existing {
+			if readErr != nil || !bytes.Equal(data, []byte(test.existing)) {
 				t.Fatalf("schedule changed: %q, %v", data, readErr)
 			}
 		})

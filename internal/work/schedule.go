@@ -142,55 +142,158 @@ func ownedScheduleFile(platform, path string, data []byte) bool {
 
 func ownedLaunchdPlist(data []byte) bool {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
-	values := make(map[string][]string)
-	pending := ""
-	depth := 0
+	foundRoot := false
 	for {
 		token, err := decoder.Token()
 		if errors.Is(err, io.EOF) {
-			break
+			return foundRoot
 		}
 		if err != nil {
 			return false
 		}
-		start, ok := token.(xml.StartElement)
-		if !ok {
-			if _, isEnd := token.(xml.EndElement); isEnd {
-				depth--
+		switch token := token.(type) {
+		case xml.StartElement:
+			if foundRoot || !xmlElementNamed(token.Name, "plist") || !ownedLaunchdPlistRoot(decoder, token) {
+				return false
 			}
-			continue
+			foundRoot = true
+		case xml.CharData:
+			if strings.TrimSpace(string(token)) != "" {
+				return false
+			}
+		case xml.EndElement:
+			return false
 		}
-		depth++
-		switch start.Name.Local {
-		case "key":
-			var key string
-			if decoder.DecodeElement(&key, &start) != nil {
+	}
+}
+
+func ownedLaunchdPlistRoot(decoder *xml.Decoder, root xml.StartElement) bool {
+	dicts := 0
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		switch token := token.(type) {
+		case xml.StartElement:
+			if dicts != 0 || !xmlElementNamed(token.Name, "dict") || !ownedLaunchdDict(decoder, token) {
 				return false
 			}
-			if depth == 3 {
-				pending = key
-			} else {
-				pending = ""
-			}
-			depth--
-		case "string":
-			var value string
-			if decoder.DecodeElement(&value, &start) != nil {
+			dicts++
+		case xml.EndElement:
+			return token.Name == root.Name && dicts == 1
+		case xml.CharData:
+			if strings.TrimSpace(string(token)) != "" {
 				return false
-			}
-			if depth == 3 && pending != "" {
-				values[pending] = append(values[pending], value)
-				pending = ""
-			}
-			depth--
-		default:
-			if start.Name.Local != "dict" && start.Name.Local != "plist" {
-				pending = ""
 			}
 		}
 	}
-	return len(values["Label"]) == 1 && values["Label"][0] == "com.artisan-build.capstan-work" &&
-		len(values["CapstanManaged"]) == 1 && values["CapstanManaged"][0] == scheduleOwnership
+}
+
+func ownedLaunchdDict(decoder *xml.Decoder, dict xml.StartElement) bool {
+	expectingKey := true
+	pendingKey := ""
+	labelCount, managedCount := 0, 0
+	validLabel, validManaged := false, false
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		switch token := token.(type) {
+		case xml.StartElement:
+			if expectingKey {
+				if !xmlElementNamed(token.Name, "key") {
+					return false
+				}
+				key, ok := xmlTextElement(decoder, token)
+				if !ok {
+					return false
+				}
+				pendingKey = key
+				switch pendingKey {
+				case "Label":
+					labelCount++
+					if labelCount != 1 {
+						return false
+					}
+				case "CapstanManaged":
+					managedCount++
+					if managedCount != 1 {
+						return false
+					}
+				}
+				expectingKey = false
+				continue
+			}
+			if xmlElementNamed(token.Name, "key") {
+				return false
+			}
+			if pendingKey == "Label" && xmlElementNamed(token.Name, "string") {
+				value, ok := xmlTextElement(decoder, token)
+				if !ok {
+					return false
+				}
+				validLabel = value == "com.artisan-build.capstan-work"
+			} else if pendingKey == "CapstanManaged" && xmlElementNamed(token.Name, "string") {
+				value, ok := xmlTextElement(decoder, token)
+				if !ok {
+					return false
+				}
+				validManaged = value == scheduleOwnership
+			} else if !skipXMLElement(decoder) {
+				return false
+			}
+			pendingKey = ""
+			expectingKey = true
+		case xml.EndElement:
+			return token.Name == dict.Name && expectingKey && labelCount == 1 && validLabel && managedCount == 1 && validManaged
+		case xml.CharData:
+			if strings.TrimSpace(string(token)) != "" {
+				return false
+			}
+		}
+	}
+}
+
+func xmlElementNamed(name xml.Name, local string) bool {
+	return name.Space == "" && name.Local == local
+}
+
+func xmlTextElement(decoder *xml.Decoder, element xml.StartElement) (string, bool) {
+	var text strings.Builder
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		switch token := token.(type) {
+		case xml.CharData:
+			text.Write(token)
+		case xml.EndElement:
+			return text.String(), token.Name == element.Name
+		case xml.Comment:
+		default:
+			return "", false
+		}
+	}
+}
+
+func skipXMLElement(decoder *xml.Decoder) bool {
+	depth := 1
+	for depth > 0 {
+		token, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		switch token.(type) {
+		case xml.StartElement:
+			depth++
+		case xml.EndElement:
+			depth--
+		}
+	}
+	return true
 }
 
 func ownedSystemdUnit(data []byte, name string) bool {
