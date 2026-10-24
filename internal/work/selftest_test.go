@@ -96,6 +96,25 @@ func TestSoloSelfTesterObservesEveryRungAndFailsClosed(t *testing.T) {
 	})
 }
 
+func TestSelfTestConfigPreservesExplicitEmptySoloExtraArgs(t *testing.T) {
+	config := testSoloConfig(t)
+	config.SoloCallTimeout = time.Second
+	config.SoloBindings = cloneSoloBindings(config.SoloBindings)
+	path, cleanup, err := writeSelfTestConfig(config, "http://127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig(self-test config) error = %v", err)
+	}
+	if loaded.SoloBindings["orchestrator"].ExtraArgs == nil {
+		t.Fatal("self-test config changed explicit empty extra_args into null")
+	}
+}
+
 func TestSoloSelfTesterClosesExactSpawnedSessionBeforeTemporaryStateRemoval(t *testing.T) {
 	for _, mode := range []string{"error", "timeout"} {
 		t.Run(mode, func(t *testing.T) {

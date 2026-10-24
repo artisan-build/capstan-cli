@@ -425,7 +425,7 @@ func cloneCommands(source map[string][]string) map[string][]string {
 func cloneSoloBindings(source map[string]SoloBinding) map[string]SoloBinding {
 	copy := make(map[string]SoloBinding, len(source))
 	for key, value := range source {
-		value.ExtraArgs = append([]string(nil), value.ExtraArgs...)
+		value.ExtraArgs = append([]string{}, value.ExtraArgs...)
 		copy[key] = value
 	}
 	return copy
