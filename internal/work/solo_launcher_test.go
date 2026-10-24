@@ -194,6 +194,9 @@ func TestSoloLauncherEchoAcceptsRenderedSoftWrapOnly(t *testing.T) {
 	if !renderedContains(strings.Replace(pointer, ", nonce", ",\n  nonce", 1), pointer) {
 		t.Fatal("rendered soft wrap hid the complete pointer")
 	}
+	if !renderedContains(strings.Replace(pointer, "signature", "sig\n  nature", 1), pointer) {
+		t.Fatal("rendered in-token soft wrap hid the complete pointer")
+	}
 	if renderedContains(strings.Replace(pointer, ", nonce", ", unrelated nonce", 1), pointer) {
 		t.Fatal("interposed output was accepted as the complete pointer")
 	}

@@ -305,7 +305,7 @@ func (l *SoloLauncher) waitEcho(ctx context.Context, ref SoloSessionRef, pointer
 }
 
 func renderedContains(output, exact string) bool {
-	normalize := func(value string) string { return strings.Join(strings.Fields(value), " ") }
+	normalize := func(value string) string { return strings.Join(strings.Fields(value), "") }
 	return strings.Contains(normalize(output), normalize(exact))
 }
 
