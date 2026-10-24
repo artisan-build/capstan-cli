@@ -116,7 +116,7 @@ func TestSoloLauncherTrustReadyPointerAndCanonicalIdentity(t *testing.T) {
 		t.Fatalf("trust sequence = %#v", sends[:2])
 	}
 	pointer, _ := sends[2]["input"].(string)
-	if len(pointer) > maxPointerBytes || !strings.Contains(pointer, "/brief?signature=brief") || !strings.Contains(pointer, testNonce) {
+	if len(pointer) > maxPointerBytes || !strings.HasPrefix(pointer, "Fetch and follow ") || !strings.Contains(pointer, "/brief?signature=brief") || !strings.Contains(pointer, testNonce) {
 		t.Fatalf("pointer = %q", pointer)
 	}
 	if !reflect.DeepEqual(sends[3]["bytes"], []int{13}) {

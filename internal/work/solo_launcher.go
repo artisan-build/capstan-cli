@@ -399,7 +399,7 @@ func pointerFromLinks(path, nonce string) (string, error) {
 	if brief == "" || !validUUIDv7(nonce) {
 		return "", errors.New("work pointer inputs are invalid")
 	}
-	pointer := fmt.Sprintf("Fetch %s, nonce %s.", brief, nonce)
+	pointer := fmt.Sprintf("Fetch and follow %s, nonce %s.", brief, nonce)
 	if len([]byte(pointer)) > maxPointerBytes {
 		return "", errors.New("work pointer exceeds the 299-byte limit")
 	}
