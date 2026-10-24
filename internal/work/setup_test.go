@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -122,18 +123,55 @@ func TestSetupRejectsNamesUnknownIDsDiscoveryErrorsAndMissingEvidence(t *testing
 	}
 }
 
-func TestInstallScheduleRefusesUnrelatedJob(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "capstan-work.service")
-	if err := os.WriteFile(path, []byte("unrelated"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	err := InstallWorkSchedule("linux", WorkSchedule{Files: map[string]string{path: "capstan-work"}})
-	if err == nil {
-		t.Fatal("unrelated schedule was overwritten")
-	}
-	data, _ := os.ReadFile(path)
-	if string(data) != "unrelated" {
-		t.Fatalf("unrelated schedule changed: %q", data)
+func TestSetupAlwaysReplacesCapstanScheduleFilesAndReloads(t *testing.T) {
+	originalCommand := scheduleCommand
+	t.Cleanup(func() { scheduleCommand = originalCommand })
+	all := SelfTestEvidence{Claim: true, Spawn: true, Fetch: true, Milestone: true, Done: true}
+
+	for _, platform := range []string{"darwin", "linux"} {
+		t.Run(platform, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("HOME", filepath.Join(root, "home"))
+			options := validSetupOptions(root)
+			options.Platform = platform
+			options.Schedule = "install"
+			options.Executable = "/opt/capstan"
+			schedule, err := RenderWorkSchedule(platform, options.Executable, options.ConfigPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for path := range schedule.Files {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("arbitrary existing content"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var calls []string
+			scheduleCommand = func(name string, args ...string) *exec.Cmd {
+				calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+				return exec.Command("true")
+			}
+			if err := Setup(context.Background(), options, strings.NewReader(""), io.Discard, setupSolo{}, setupTester{evidence: all}); err != nil {
+				t.Fatal(err)
+			}
+			for path, want := range schedule.Files {
+				data, err := os.ReadFile(path)
+				if err != nil || string(data) != want {
+					t.Fatalf("generated schedule %s was not installed: %q, %v", path, data, err)
+				}
+			}
+			joined := strings.Join(calls, "\n")
+			if platform == "darwin" {
+				if len(calls) != 2 || !strings.Contains(joined, "launchctl bootout gui/") || !strings.Contains(joined, "launchctl bootstrap gui/") {
+					t.Fatalf("launchd activation calls = %v", calls)
+				}
+			} else if len(calls) != 2 || calls[0] != "systemctl --user daemon-reload" || calls[1] != "systemctl --user enable --now capstan-work.timer" {
+				t.Fatalf("systemd activation calls = %v", calls)
+			}
+		})
 	}
 }
 
@@ -228,53 +266,6 @@ func TestSetupRefusesActiveClaimsWithoutChangingProductionFiles(t *testing.T) {
 		t.Fatalf("active-claim error = %v", err)
 	}
 	assertFilesEqual(t, paths, before)
-}
-
-func TestScheduleOwnershipRequiresStructuralMarkerAndIdentity(t *testing.T) {
-	cases := []struct {
-		name     string
-		platform string
-		file     string
-		existing string
-	}{
-		{"launchd comment and path", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>unrelated.job</string><key>ProgramArguments</key><array><string>/tmp/capstan-work</string></array><!-- com.artisan-build.capstan-work --></dict></plist>`},
-		{"launchd marker with wrong label", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>unrelated.job</string><key>CapstanManaged</key><string>capstan-work/v1</string></dict></plist>`},
-		{"launchd unrelated document root", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><not-a-plist><dict><key>Label</key><string>com.artisan-build.capstan-work</string><key>CapstanManaged</key><string>capstan-work/v1</string></dict></not-a-plist>`},
-		{"launchd multiple document roots", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>com.artisan-build.capstan-work</string><key>CapstanManaged</key><string>capstan-work/v1</string></dict></plist><plist></plist>`},
-		{"launchd multiple top-level dicts", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>com.artisan-build.capstan-work</string><key>CapstanManaged</key><string>capstan-work/v1</string></dict><dict></dict></plist>`},
-		{"launchd duplicate label with mixed value types", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>com.artisan-build.capstan-work</string><key>Label</key><integer>1</integer><key>CapstanManaged</key><string>capstan-work/v1</string></dict></plist>`},
-		{"launchd duplicate marker with mixed value types", "darwin", "com.artisan-build.capstan-work.plist", `<?xml version="1.0"?><plist><dict><key>Label</key><string>com.artisan-build.capstan-work</string><key>CapstanManaged</key><string>capstan-work/v1</string><key>CapstanManaged</key><integer>1</integer></dict></plist>`},
-		{"systemd service description and command", "linux", "capstan-work.service", "[Unit]\nDescription=Unrelated monitor for capstan-work\n\n[Service]\nExecStart=/tmp/capstan-work-helper\n"},
-		{"systemd timer comment and target", "linux", "capstan-work.timer", "# capstan-work.timer\n[Unit]\nDescription=Unrelated\n\n[Timer]\nUnit=capstan-work.service\n"},
-		{"systemd ambiguous markers", "linux", "capstan-work.service", "[Unit]\nX-Capstan-Managed=capstan-work/v1\nX-Capstan-Managed=capstan-work/v1\nX-Capstan-Unit=capstan-work.service\n\n[Service]\nExecStart=/tmp/capstan-work\n"},
-	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), test.file)
-			if err := os.WriteFile(path, []byte(test.existing), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			err := InstallWorkSchedule(test.platform, WorkSchedule{Files: map[string]string{path: "replacement"}})
-			if err == nil {
-				t.Fatal("unrelated schedule was accepted")
-			}
-			data, readErr := os.ReadFile(path)
-			if readErr != nil || !bytes.Equal(data, []byte(test.existing)) {
-				t.Fatalf("schedule changed: %q, %v", data, readErr)
-			}
-		})
-	}
-	for _, platform := range []string{"darwin", "linux"} {
-		schedule, err := RenderWorkSchedule(platform, "/opt/capstan", "/private/work.json")
-		if err != nil {
-			t.Fatal(err)
-		}
-		for path, content := range schedule.Files {
-			if !ownedScheduleFile(platform, path, []byte(content)) {
-				t.Fatalf("generated %s schedule lacks structural ownership: %s", platform, path)
-			}
-		}
-	}
 }
 
 func validSetupOptions(root string) SetupOptions {

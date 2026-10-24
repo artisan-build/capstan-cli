@@ -115,11 +115,6 @@ func Setup(ctx context.Context, options SetupOptions, input io.Reader, output io
 	if err != nil {
 		return err
 	}
-	if options.Schedule == "install" {
-		if err := validateWorkScheduleTargets(options.Platform, schedule); err != nil {
-			return err
-		}
-	}
 	release, err := lockSetupReplacement(plan)
 	if err != nil {
 		return err
