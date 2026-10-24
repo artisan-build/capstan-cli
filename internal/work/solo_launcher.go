@@ -287,7 +287,10 @@ func (l *SoloLauncher) waitIdle(ctx context.Context, ref SoloSessionRef) error {
 		if err != nil {
 			return err
 		}
-		if status.Kind != "agent" || status.Status != "Running" || !statusMatchesRef(status, ref) {
+		if status.Kind != "agent" || !statusMatchesRef(status, ref) {
+			return errors.New("solo process identity changed")
+		}
+		if status.Status != "Running" {
 			return errSoloSessionNotAlive
 		}
 		if status.AgentState.Idle {
