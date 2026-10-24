@@ -296,12 +296,17 @@ func (l *SoloLauncher) waitEcho(ctx context.Context, ref SoloSessionRef, pointer
 		if err != nil {
 			return err
 		}
-		if strings.Contains(output, pointer) {
+		if renderedContains(output, pointer) {
 			return nil
 		}
 		time.Sleep(l.pollInterval)
 	}
 	return errors.New("solo did not echo the work pointer")
+}
+
+func renderedContains(output, exact string) bool {
+	normalize := func(value string) string { return strings.Join(strings.Fields(value), " ") }
+	return strings.Contains(normalize(output), normalize(exact))
 }
 
 func (l *SoloLauncher) status(ctx context.Context, ref SoloSessionRef) (soloProcessStatus, error) {

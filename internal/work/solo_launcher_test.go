@@ -189,6 +189,16 @@ func TestSoloLauncherIdleWakeAndDirectiveActions(t *testing.T) {
 	}
 }
 
+func TestSoloLauncherEchoAcceptsRenderedSoftWrapOnly(t *testing.T) {
+	pointer := "Fetch and follow https://server.example/brief?signature=brief, nonce " + testNonce + "."
+	if !renderedContains(strings.Replace(pointer, ", nonce", ",\n  nonce", 1), pointer) {
+		t.Fatal("rendered soft wrap hid the complete pointer")
+	}
+	if renderedContains(strings.Replace(pointer, ", nonce", ", unrelated nonce", 1), pointer) {
+		t.Fatal("interposed output was accepted as the complete pointer")
+	}
+}
+
 func TestSoloLauncherSelectsCompleteReadyMarkerByHarness(t *testing.T) {
 	claudeMarker := "────────────────────────────────────────────────────────────────\n❯\n────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent"
 	markers := map[string]string{
