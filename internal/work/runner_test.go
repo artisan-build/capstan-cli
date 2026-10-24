@@ -703,6 +703,40 @@ func TestRunnerSoloRoutingIdentityReuseAndColdReplacement(t *testing.T) {
 		}
 	})
 
+	t.Run("terminal orchestrator turnover preserves and reuses the live seat", func(t *testing.T) {
+		config := testSoloConfig(t)
+		spokeID := int64(71)
+		ref, _ := (SoloSessionRef{SpokeID: spokeID, SoloProjectID: 12, SoloProcessID: 88, LaunchNonce: testNonce, Harness: "claude", AgentToolID: 13}).String()
+		old := seedItem(t, config, testItemID, "orchestrator", "routed", ref)
+		old.SpokeID = spokeID
+		if err := NewStateStore(config.StateFile, config.WorkDir).Save(State{Version: stateVersion, Items: map[string]*ItemState{testItemID: old}}); err != nil {
+			t.Fatal(err)
+		}
+		api := &fakeAPI{
+			renewFn: func([]RenewRequestItem) ([]RenewResult, error) {
+				return []RenewResult{{ItemID: testItemID, Status: "lost"}}, nil
+			},
+			claimFn: func(ClaimRequest) (ClaimResponse, error) {
+				return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID2, TaskID: testTaskID, Role: "orchestrator", Fence: 1, SeatFence: 3, LaunchNonce: testRespawnNonce, SessionRef: ref, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
+			},
+		}
+		solo := &fakeSoloCall{status: soloProcessStatus{ID: 88, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Running"}}
+		solo.status.AgentState.Idle = true
+		launcher := NewSoloLauncher(solo, time.Second)
+		launcher.pollInterval = time.Millisecond
+		if err := NewRunner(config, api, launcher, staticHealth{}, nil).Run(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		for _, call := range solo.calls {
+			if call.name == "spawn_agent" || call.name == "close_process" {
+				t.Fatalf("terminal turnover replaced the live seat: %#v", call)
+			}
+		}
+		if len(api.transitions) != 2 || api.transitions[0].ItemID != testItemID2 || api.transitions[0].SessionRef != ref || api.transitions[0].LaunchNonce != testRespawnNonce {
+			t.Fatalf("warm turnover transitions = %#v", api.transitions)
+		}
+	})
+
 	t.Run("dead orchestrator is released and cold-spawned from the returned claim", func(t *testing.T) {
 		config := testSoloConfig(t)
 		spokeID := int64(71)

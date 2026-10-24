@@ -147,7 +147,7 @@ func (r *Runner) recover(ctx context.Context, state *State) error {
 			}
 			switch result.Status {
 			case "lost":
-				if item.SessionRef != "" {
+				if item.SessionRef != "" && item.Role != "orchestrator" {
 					alive, aliveErr := r.launcher.Alive(ctx, item.SessionRef)
 					if aliveErr != nil {
 						return fmt.Errorf("local session health failed: item_id=%s", id)
