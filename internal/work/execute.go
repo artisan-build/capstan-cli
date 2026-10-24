@@ -37,9 +37,19 @@ func Execute(ctx context.Context, configPath string, launcher Launcher, health H
 		return err
 	}
 	if launcher == nil {
-		launcher, err = NewProcessLauncher()
-		if err != nil {
-			return err
+		if config.Launcher == "solo" {
+			var client *StdioSoloClient
+			client, err = NewStdioSoloClient(ctx, config.SoloMCPPath, config.SoloCallTimeout)
+			if err != nil {
+				return err
+			}
+			defer func() { returnErr = errors.Join(returnErr, client.Close()) }()
+			launcher = NewSoloLauncher(client, config.SoloReadyTimeout)
+		} else {
+			launcher, err = NewProcessLauncher()
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if health == nil {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -31,25 +32,30 @@ var (
 )
 
 type rawConfig struct {
-	Version                    int                 `json:"version"`
-	CapstanURL                 string              `json:"capstan_url"`
-	Team                       string              `json:"team"`
-	ActorID                    string              `json:"actor_id"`
-	CredentialFile             string              `json:"credential_file"`
-	MaxConcurrent              *int                `json:"max_concurrent"`
-	OrchestratorCapacity       *int                `json:"orchestrator_capacity"`
-	MaxLoad1m                  float64             `json:"max_load_1m"`
-	MaxMemoryPercent           float64             `json:"max_memory_percent"`
-	Capabilities               []string            `json:"capabilities"`
-	Roles                      []string            `json:"roles"`
-	RoleProviders              map[string]string   `json:"role_providers"`
-	StateFile                  string              `json:"state_file"`
-	WorkDir                    string              `json:"work_dir"`
-	LockFile                   string              `json:"lock_file"`
-	PromptTemplate             string              `json:"prompt_template"`
-	OrchestratorPromptTemplate string              `json:"orchestrator_prompt_template"`
-	RoleCommands               map[string][]string `json:"role_commands"`
-	RequestTimeoutSeconds      float64             `json:"request_timeout_seconds"`
+	Version                    int                    `json:"version"`
+	Launcher                   string                 `json:"launcher"`
+	CapstanURL                 string                 `json:"capstan_url"`
+	Team                       string                 `json:"team"`
+	ActorID                    string                 `json:"actor_id"`
+	CredentialFile             string                 `json:"credential_file"`
+	MaxConcurrent              *int                   `json:"max_concurrent"`
+	OrchestratorCapacity       *int                   `json:"orchestrator_capacity"`
+	MaxLoad1m                  float64                `json:"max_load_1m"`
+	MaxMemoryPercent           float64                `json:"max_memory_percent"`
+	Capabilities               []string               `json:"capabilities"`
+	Roles                      []string               `json:"roles"`
+	RoleProviders              map[string]string      `json:"role_providers"`
+	StateFile                  string                 `json:"state_file"`
+	WorkDir                    string                 `json:"work_dir"`
+	LockFile                   string                 `json:"lock_file"`
+	PromptTemplate             string                 `json:"prompt_template"`
+	OrchestratorPromptTemplate string                 `json:"orchestrator_prompt_template"`
+	RoleCommands               map[string][]string    `json:"role_commands"`
+	SoloMCPPath                string                 `json:"solo_mcp_path"`
+	SoloCallTimeoutSeconds     float64                `json:"solo_call_timeout_seconds"`
+	SoloReadyTimeoutSeconds    float64                `json:"solo_ready_timeout_seconds"`
+	SoloBindings               map[string]SoloBinding `json:"solo_bindings"`
+	RequestTimeoutSeconds      float64                `json:"request_timeout_seconds"`
 }
 
 // DefaultConfigPath returns work.json beneath Capstan's XDG config directory.
@@ -100,8 +106,8 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func validateConfig(path string, raw rawConfig) (Config, error) {
-	if raw.Version != 1 {
-		return Config{}, errors.New("work config version must be 1")
+	if raw.Version != 1 && raw.Version != 2 {
+		return Config{}, errors.New("work config version must be 1 or 2")
 	}
 	server, err := validateDrainURL(raw.CapstanURL)
 	if err != nil {
@@ -140,24 +146,66 @@ func validateConfig(path string, raw rawConfig) (Config, error) {
 	if raw.Capabilities == nil {
 		return Config{}, errors.New("work config capabilities must be an explicit JSON list")
 	}
-	if len(raw.RoleProviders) != len(raw.Roles) || len(raw.RoleCommands) != len(raw.Roles) {
-		return Config{}, errors.New("work config role_providers and role_commands must exactly match roles")
+	if len(raw.RoleProviders) != len(raw.Roles) {
+		return Config{}, errors.New("work config role_providers must exactly match roles")
 	}
 	for _, role := range raw.Roles {
 		provider, ok := raw.RoleProviders[role]
 		if !ok || !providerPattern.MatchString(provider) {
 			return Config{}, fmt.Errorf("work config provider for role %q is invalid", role)
 		}
-		command, ok := raw.RoleCommands[role]
-		if !ok || len(command) == 0 {
-			return Config{}, fmt.Errorf("work config command for role %q must be a non-empty argv list", role)
+	}
+	launcher := raw.Launcher
+	if raw.Version == 1 && launcher == "" {
+		launcher = "process"
+	}
+	if raw.Version == 1 && launcher != "process" {
+		return Config{}, errors.New("work config version 1 supports only the process launcher")
+	}
+	if raw.Version == 1 && (raw.SoloMCPPath != "" || raw.SoloCallTimeoutSeconds != 0 || raw.SoloReadyTimeoutSeconds != 0 || raw.SoloBindings != nil) {
+		return Config{}, errors.New("work config version 1 cannot contain Solo launcher fields")
+	}
+	if raw.Version == 2 && launcher != "solo" {
+		return Config{}, errors.New("work config version 2 launcher must be solo")
+	}
+	if launcher == "process" {
+		if len(raw.RoleCommands) != len(raw.Roles) {
+			return Config{}, errors.New("work config role_commands must exactly match roles")
 		}
-		for _, part := range command {
-			if part == "" || strings.ContainsRune(part, 0) {
-				return Config{}, fmt.Errorf("work config command for role %q contains an empty or invalid argument", role)
+		for _, role := range raw.Roles {
+			command, ok := raw.RoleCommands[role]
+			if !ok || len(command) == 0 {
+				return Config{}, fmt.Errorf("work config command for role %q must be a non-empty argv list", role)
 			}
-			if err := validateTemplate(part); err != nil {
-				return Config{}, fmt.Errorf("work config command for role %q: %w", role, err)
+			for _, part := range command {
+				if part == "" || strings.ContainsRune(part, 0) {
+					return Config{}, fmt.Errorf("work config command for role %q contains an empty or invalid argument", role)
+				}
+				if err := validateTemplate(part); err != nil {
+					return Config{}, fmt.Errorf("work config command for role %q: %w", role, err)
+				}
+			}
+		}
+	} else {
+		if raw.RoleCommands != nil {
+			return Config{}, errors.New("work config version 2 cannot contain role_commands")
+		}
+		if len(raw.SoloBindings) != len(raw.Roles) {
+			return Config{}, errors.New("work config solo_bindings must exactly match roles")
+		}
+		if raw.SoloCallTimeoutSeconds <= 0 || raw.SoloCallTimeoutSeconds > 120 ||
+			raw.SoloReadyTimeoutSeconds <= 0 || raw.SoloReadyTimeoutSeconds > 300 {
+			return Config{}, errors.New("work config Solo timeouts are outside the allowed range")
+		}
+		for _, role := range raw.Roles {
+			binding, ok := raw.SoloBindings[role]
+			if !providerPattern.MatchString(role) || !ok || binding.ProjectID < 1 || binding.AgentToolID < 1 || !supportedHarness(binding.Harness) || binding.ExtraArgs == nil || len(binding.ExtraArgs) > 64 {
+				return Config{}, fmt.Errorf("work config Solo binding for role %q is invalid", role)
+			}
+			for _, arg := range binding.ExtraArgs {
+				if arg == "" || len(arg) > 4096 || strings.ContainsRune(arg, 0) {
+					return Config{}, fmt.Errorf("work config Solo binding for role %q has an invalid argument", role)
+				}
 			}
 		}
 	}
@@ -204,6 +252,16 @@ func validateConfig(path string, raw rawConfig) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	soloMCP := ""
+	if launcher == "solo" {
+		if raw.SoloMCPPath == "" {
+			raw.SoloMCPPath = defaultSoloMCPPath(runtime.GOOS)
+		}
+		soloMCP, err = resolve(raw.SoloMCPPath, "solo_mcp_path")
+		if err != nil {
+			return Config{}, err
+		}
+	}
 	for _, template := range []string{prompt, orchestratorPrompt} {
 		data, readErr := os.ReadFile(template)
 		if readErr != nil {
@@ -222,7 +280,10 @@ func validateConfig(path string, raw rawConfig) (Config, error) {
 		Roles:         append(make([]string, 0, len(raw.Roles)), raw.Roles...),
 		RoleProviders: cloneStringMap(raw.RoleProviders), StateFile: state, WorkDir: workDir, LockFile: lock,
 		PromptTemplate: prompt, OrchestratorPromptTemplate: orchestratorPrompt,
-		RoleCommands: cloneCommands(raw.RoleCommands), RequestTimeout: time.Duration(raw.RequestTimeoutSeconds * float64(time.Second)),
+		Launcher: launcher, RoleCommands: cloneCommands(raw.RoleCommands), SoloMCPPath: soloMCP,
+		SoloCallTimeout:  time.Duration(raw.SoloCallTimeoutSeconds * float64(time.Second)),
+		SoloReadyTimeout: time.Duration(raw.SoloReadyTimeoutSeconds * float64(time.Second)),
+		SoloBindings:     cloneSoloBindings(raw.SoloBindings), RequestTimeout: time.Duration(raw.RequestTimeoutSeconds * float64(time.Second)),
 	}, nil
 }
 
@@ -359,4 +420,27 @@ func cloneCommands(source map[string][]string) map[string][]string {
 	}
 
 	return copy
+}
+
+func cloneSoloBindings(source map[string]SoloBinding) map[string]SoloBinding {
+	copy := make(map[string]SoloBinding, len(source))
+	for key, value := range source {
+		value.ExtraArgs = append([]string{}, value.ExtraArgs...)
+		copy[key] = value
+	}
+	return copy
+}
+
+func supportedHarness(value string) bool {
+	return value == "claude" || value == "codex" || value == "opencode"
+}
+
+func defaultSoloMCPPath(goos string) string {
+	if goos == "darwin" {
+		return "/Applications/Solo.app/Contents/MacOS/mcp"
+	}
+	if goos == "linux" {
+		return "/usr/local/bin/solo-mcp"
+	}
+	return "solo-mcp"
 }

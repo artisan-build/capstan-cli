@@ -19,6 +19,8 @@ server (auth + gated artifact host, and eventually the local always-on runner).
   locking, and filesystem failures exit non-zero.
 - `capstan work drain [--config <path>]` — run one recovery, renewal, claim, and launch tick for
   Capstan Work. A scheduler starts each tick; the command does not remain resident.
+- `capstan work setup` — list Solo projects and agent tools, write the private Work configuration,
+  install or print the one-shot schedule, and run the live setup self-test.
 
 ## Build
 
@@ -83,11 +85,16 @@ This repository intentionally ships no installer for the monitor.
 
 ## Work drain
 
-`capstan work drain` defaults to `$XDG_CONFIG_HOME/capstan/work.json`, falling back to
-`$HOME/.config/capstan/work.json`. The file must have mode `0600` or stricter. Start with
-[`docs/work.example.json`](docs/work.example.json), copy it into the Capstan config directory, and
-replace its example values and absolute command paths. Relative paths are resolved from the config
-file's directory.
+Run `capstan work setup` first. It lists the installed Solo projects and agent tools with their ids,
+then asks for one explicit project/tool binding per leaf role and one for the orchestrator. For
+automation, pass `--non-interactive` and repeat
+`--binding role=project_id:agent_tool_id:harness`. Setup never resolves an id from a display name.
+
+The generated file defaults to `$XDG_CONFIG_HOME/capstan/work.json`, falling back to
+`$HOME/.config/capstan/work.json`, and has mode `0600`. [`docs/work.example.json`](docs/work.example.json)
+shows the version 2 shape. Relative paths are resolved from the config file's directory. See
+[`docs/work.md`](docs/work.md) for setup flags, Solo paths, scheduling, the launch sequence, and the
+self-test contract.
 
 There is no daemon.
 
@@ -96,8 +103,7 @@ or stricter. The drain reads it after taking the non-blocking overlap lock. It s
 Authorization header and never writes it to state or output. `capstan_url` must use HTTPS except for
 localhost and loopback development.
 
-Each role needs an explicit provider and an argv array in `role_commands`; shell command strings are
-not accepted. Prompt and command templates may use `{config_dir}`, `{fence}`, `{item_id}`,
+Each role needs an explicit Solo project id, agent-tool id, and harness. Prompt templates may use `{config_dir}`, `{fence}`, `{item_id}`,
 `{launch_nonce}`, `{links_file}`, `{prompt_file}`, `{role}`, `{seat_fence}`, `{session_ref}`,
 `{task_id}`, and `{work_dir}`. Unknown placeholders stop configuration loading. Signed URLs are kept
 only in each item's private `links.json`, so prompts should tell the worker to read `{links_file}`
@@ -116,13 +122,20 @@ roles, capabilities, role providers, and fenced held items. The drain runs only 
 `resend_pointer`, or `respawn` directives returned by that tick. Directive outcomes are durable and
 reported on the next tick; replay does not execute a completed directive twice.
 
-The generic launcher runs configured argv without a shell behind a local gate. It records recovery
-state, sends `delivered` with the server nonce and opaque session reference, sends `routed`, and then
-opens the gate. This adapter cannot send interactive Enter or pointer repairs, so those directives
-report failure. PR7 will add the Solo stdio launcher, `capstan work setup`, and the live self-test;
-this command does not contain Solo-specific behavior yet.
+The Solo launcher waits for the harness prompt before it types. On a fresh folder it selects trust
+with Down and a separate Enter, waits for the prompt again, types a short signed-brief pointer, sends
+Enter separately, and checks the rendered echo. It wakes a reusable orchestrator only after Solo
+reports that exact process idle. Leaf items always spawn the role's configured tool.
 
-Run one tick from a scheduler such as launchd, systemd, or cron:
+Every Solo session reference contains the server-authoritative spoke id, Solo project and process
+ids, launch nonce, harness, and agent-tool id. It contains no bearer, signed URL, or prompt. Initial
+spawns use the claim's server-issued UUIDv7 nonce. A server `respawn` directive supplies the
+replacement nonce. On a warm orchestrator wake, the session reference keeps the process's original
+nonce while the signed pointer and `delivered` transition use the newly claimed item's nonce.
+`send_enter`, `resend_pointer`, and `respawn` run only when the server returns them.
+
+Setup can print the launchd or systemd files, or install and activate only Capstan's dedicated user
+job with `--schedule install`. Run one tick manually with:
 
 ```sh
 /absolute/path/to/capstan work drain

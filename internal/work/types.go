@@ -40,8 +40,21 @@ type Config struct {
 	LockFile                   string
 	PromptTemplate             string
 	OrchestratorPromptTemplate string
+	Launcher                   string
 	RoleCommands               map[string][]string
+	SoloMCPPath                string
+	SoloCallTimeout            time.Duration
+	SoloReadyTimeout           time.Duration
+	SoloBindings               map[string]SoloBinding
 	RequestTimeout             time.Duration
+}
+
+// SoloBinding selects one installed Solo project and agent tool by immutable id.
+type SoloBinding struct {
+	ProjectID   int64    `json:"project_id"`
+	AgentToolID int64    `json:"agent_tool_id"`
+	Harness     string   `json:"harness"`
+	ExtraArgs   []string `json:"extra_args"`
 }
 
 // HealthSnapshot is the local admission data read once per drain run.
@@ -64,6 +77,10 @@ type LaunchSpec struct {
 	GatePath           string
 	LaunchKey          string
 	ExistingSessionRef string
+	Role               string
+	SpokeID            int64
+	LaunchNonce        string
+	SoloBinding        SoloBinding
 }
 
 // Launcher owns local session actions. Protocol, state, API, and recovery remain in Runner.
@@ -71,9 +88,9 @@ type Launcher interface {
 	Launch(context.Context, LaunchSpec) (string, error)
 	Alive(context.Context, string) (bool, error)
 	Terminate(context.Context, string) error
-	OpenGate(context.Context, string) error
-	SendEnter(context.Context, string, string) error
-	ResendPointer(context.Context, string, string, string) error
+	OpenGate(context.Context, string, string, string) error
+	SendEnter(context.Context, string, string, string, string) error
+	ResendPointer(context.Context, string, string, string, string) error
 }
 
 // Logger receives redacted operational messages.

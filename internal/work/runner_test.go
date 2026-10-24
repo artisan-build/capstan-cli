@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -90,7 +91,7 @@ func (f *fakeLauncher) Terminate(_ context.Context, ref string) error {
 	return nil
 }
 
-func (f *fakeLauncher) OpenGate(_ context.Context, path string) error {
+func (f *fakeLauncher) OpenGate(_ context.Context, _ string, path, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gates = append(f.gates, path)
@@ -101,7 +102,7 @@ func (f *fakeLauncher) OpenGate(_ context.Context, path string) error {
 	return nil
 }
 
-func (f *fakeLauncher) SendEnter(_ context.Context, ref, directiveID string) error {
+func (f *fakeLauncher) SendEnter(_ context.Context, ref, _, _, directiveID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.enters = append(f.enters, ref+":"+directiveID)
@@ -109,7 +110,7 @@ func (f *fakeLauncher) SendEnter(_ context.Context, ref, directiveID string) err
 	return nil
 }
 
-func (f *fakeLauncher) ResendPointer(_ context.Context, ref, path, directiveID string) error {
+func (f *fakeLauncher) ResendPointer(_ context.Context, ref, path, _, directiveID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pointers = append(f.pointers, ref+":"+path+":"+directiveID)
@@ -635,6 +636,216 @@ func TestRunnerRenewBatchNeverExceedsCap(t *testing.T) {
 	if len(api.renews) != 1 || len(api.renews[0]) != MaxBatch {
 		t.Fatalf("renew batch sizes = %#v", api.renews)
 	}
+}
+
+func TestRunnerSoloRoutingIdentityReuseAndColdReplacement(t *testing.T) {
+	t.Run("leaf uses authoritative spoke and configured tool with fresh nonce", func(t *testing.T) {
+		config := testSoloConfig(t)
+		spokeID := int64(71)
+		api := &fakeAPI{claimFn: func(ClaimRequest) (ClaimResponse, error) {
+			return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "builder", Fence: 1, LaunchNonce: testNonce, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
+		}}
+		solo := &fakeSoloCall{outputs: []string{"┃ Ask anything, / for commands, @ for context…"}}
+		launcher := NewSoloLauncher(solo, time.Second)
+		launcher.pollInterval = time.Millisecond
+		runner := NewRunner(config, api, launcher, staticHealth{}, nil)
+		if err := runner.Run(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(api.transitions) != 2 || api.transitions[0].LaunchNonce != testNonce {
+			t.Fatalf("transitions = %#v", api.transitions)
+		}
+		ref, err := ParseSoloSessionRef(api.transitions[0].SessionRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ref.SpokeID != spokeID || ref.SoloProjectID != 8 || ref.SoloProcessID != 77 || ref.LaunchNonce != testNonce || ref.Harness != "opencode" || ref.AgentToolID != 9 {
+			t.Fatalf("session identity = %#v", ref)
+		}
+		spawn := firstSoloCall(t, solo.calls, "spawn_agent")
+		if spawn.arguments["project_id"] != int64(8) || spawn.arguments["agent_tool_id"] != int64(9) {
+			t.Fatalf("leaf spawn = %#v", spawn.arguments)
+		}
+	})
+
+	t.Run("orchestrator reusable seat waits for idle and does not spawn", func(t *testing.T) {
+		config := testSoloConfig(t)
+		spokeID := int64(71)
+		ref, _ := (SoloSessionRef{SpokeID: spokeID, SoloProjectID: 12, SoloProcessID: 88, LaunchNonce: testNonce, Harness: "claude", AgentToolID: 13}).String()
+		api := &fakeAPI{claimFn: func(ClaimRequest) (ClaimResponse, error) {
+			return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "orchestrator", Fence: 1, SeatFence: 3, LaunchNonce: testRespawnNonce, SessionRef: ref, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
+		}}
+		solo := &fakeSoloCall{status: soloProcessStatus{ID: 88, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Running"}}
+		solo.status.AgentState.Idle = true
+		launcher := NewSoloLauncher(solo, time.Second)
+		launcher.pollInterval = time.Millisecond
+		if err := NewRunner(config, api, launcher, staticHealth{}, nil).Run(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		for _, call := range solo.calls {
+			if call.name == "spawn_agent" {
+				t.Fatal("reusable orchestrator spawned")
+			}
+		}
+		if api.transitions[0].SessionRef != ref {
+			t.Fatalf("reused session = %q", api.transitions[0].SessionRef)
+		}
+		if api.transitions[0].LaunchNonce != testRespawnNonce {
+			t.Fatalf("delivered nonce = %q", api.transitions[0].LaunchNonce)
+		}
+		pointer := firstSoloCall(t, solo.calls, "send_input").arguments["input"]
+		if text, ok := pointer.(string); !ok || !strings.Contains(text, testRespawnNonce) || strings.Contains(text, testNonce) {
+			t.Fatalf("warm-wake pointer = %#v", pointer)
+		}
+		decoded, err := ParseSoloSessionRef(api.transitions[0].SessionRef)
+		if err != nil || decoded.LaunchNonce != testNonce {
+			t.Fatalf("process-generation ref = %#v, %v", decoded, err)
+		}
+	})
+
+	t.Run("terminal orchestrator turnover preserves and reuses the live seat", func(t *testing.T) {
+		config := testSoloConfig(t)
+		spokeID := int64(71)
+		ref, _ := (SoloSessionRef{SpokeID: spokeID, SoloProjectID: 12, SoloProcessID: 88, LaunchNonce: testNonce, Harness: "claude", AgentToolID: 13}).String()
+		old := seedItem(t, config, testItemID, "orchestrator", "routed", ref)
+		old.SpokeID = spokeID
+		if err := NewStateStore(config.StateFile, config.WorkDir).Save(State{Version: stateVersion, Items: map[string]*ItemState{testItemID: old}}); err != nil {
+			t.Fatal(err)
+		}
+		api := &fakeAPI{
+			renewFn: func([]RenewRequestItem) ([]RenewResult, error) {
+				return []RenewResult{{ItemID: testItemID, Status: "lost"}}, nil
+			},
+			claimFn: func(ClaimRequest) (ClaimResponse, error) {
+				return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID2, TaskID: testTaskID, Role: "orchestrator", Fence: 1, SeatFence: 3, LaunchNonce: testRespawnNonce, SessionRef: ref, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
+			},
+		}
+		solo := &fakeSoloCall{status: soloProcessStatus{ID: 88, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Running"}}
+		solo.status.AgentState.Idle = true
+		launcher := NewSoloLauncher(solo, time.Second)
+		launcher.pollInterval = time.Millisecond
+		if err := NewRunner(config, api, launcher, staticHealth{}, nil).Run(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		for _, call := range solo.calls {
+			if call.name == "spawn_agent" || call.name == "close_process" {
+				t.Fatalf("terminal turnover replaced the live seat: %#v", call)
+			}
+		}
+		if len(api.transitions) != 2 || api.transitions[0].ItemID != testItemID2 || api.transitions[0].SessionRef != ref || api.transitions[0].LaunchNonce != testRespawnNonce {
+			t.Fatalf("warm turnover transitions = %#v", api.transitions)
+		}
+	})
+
+	t.Run("dead orchestrator is released and cold-spawned from the returned claim", func(t *testing.T) {
+		config := testSoloConfig(t)
+		spokeID := int64(71)
+		oldRef, _ := (SoloSessionRef{SpokeID: spokeID, SoloProjectID: 12, SoloProcessID: 66, LaunchNonce: testNonce, Harness: "claude", AgentToolID: 13}).String()
+		item := seedItem(t, config, testItemID, "orchestrator", "routed", oldRef)
+		item.SpokeID = spokeID
+		if err := NewStateStore(config.StateFile, config.WorkDir).Save(State{Version: stateVersion, Items: map[string]*ItemState{testItemID: item}}); err != nil {
+			t.Fatal(err)
+		}
+		api := &fakeAPI{
+			renewFn: func([]RenewRequestItem) ([]RenewResult, error) {
+				return []RenewResult{{ItemID: testItemID, Status: "renewed", Item: &RenewedItem{ID: testItemID, TaskID: testTaskID, Role: "orchestrator", State: "routed", Fence: 1, Links: testLinks("https://renew.example")}}}, nil
+			},
+			claimFn: func(ClaimRequest) (ClaimResponse, error) {
+				return ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "orchestrator", Fence: 2, LaunchNonce: testNonce, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
+			},
+		}
+		solo := &fakeSoloCall{status: soloProcessStatus{ID: 66, Name: "capstan-orchestrator-" + testNonce, Kind: "agent", Status: "Stopped"}, outputs: []string{"────────────────────────────────────────────────────────────────\n❯\n────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent"}}
+		launcher := NewSoloLauncher(solo, time.Second)
+		launcher.pollInterval = time.Millisecond
+		runner := NewRunner(config, api, launcher, staticHealth{}, nil)
+		if err := runner.Run(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(api.transitions) != 3 || api.transitions[0].State != "released" || api.transitions[1].State != "delivered" {
+			t.Fatalf("cold replacement transitions = %#v", api.transitions)
+		}
+		spawn := firstSoloCall(t, solo.calls, "spawn_agent")
+		if spawn.arguments["project_id"] != int64(12) || spawn.arguments["agent_tool_id"] != int64(13) {
+			t.Fatalf("orchestrator cold spawn = %#v", spawn.arguments)
+		}
+	})
+
+	t.Run("claim without authoritative spoke id fails before spawn", func(t *testing.T) {
+		config := testSoloConfig(t)
+		api := &fakeAPI{claimFn: func(ClaimRequest) (ClaimResponse, error) {
+			return ClaimResponse{Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "builder", Fence: 1, LaunchNonce: testNonce, Links: testLinks("https://server.example")}}, Directives: []Directive{}}, nil
+		}}
+		solo := &fakeSoloCall{}
+		err := NewRunner(config, api, NewSoloLauncher(solo, time.Second), staticHealth{}, nil).Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "authoritative spoke") {
+			t.Fatalf("error = %v", err)
+		}
+		if len(solo.calls) != 0 {
+			t.Fatalf("Solo called before spoke validation: %#v", solo.calls)
+		}
+	})
+}
+
+func TestRunnerSoloEndToEndFakeServerCarriesAuthoritativeIdentity(t *testing.T) {
+	spokeID := int64(71)
+	var transitions []TransitionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch filepath.Base(request.URL.Path) {
+		case "claim":
+			writeJSON(t, writer, ClaimResponse{SpokeID: &spokeID, Items: []ClaimItem{{ID: testItemID, TaskID: testTaskID, Role: "builder", Fence: 1, LaunchNonce: testNonce, Links: testLinks(serverURL(request))}}, Directives: []Directive{}})
+		case "transition":
+			var transition TransitionRequest
+			if err := json.NewDecoder(request.Body).Decode(&transition); err != nil {
+				t.Fatal(err)
+			}
+			transitions = append(transitions, transition)
+			writeJSON(t, writer, map[string]any{"item": map[string]any{"id": testItemID, "task_id": testTaskID, "role": "builder", "state": transition.State, "fence": 1}})
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	config := testSoloConfig(t)
+	config.CapstanURL = server.URL
+	solo := &fakeSoloCall{outputs: []string{"┃ Ask anything, / for commands, @ for context…"}}
+	launcher := NewSoloLauncher(solo, time.Second)
+	launcher.pollInterval = time.Millisecond
+	if err := NewRunner(config, NewClient(config, "bound-secret"), launcher, staticHealth{}, nil).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transitions) != 2 || transitions[0].State != "delivered" || transitions[1].State != "routed" {
+		t.Fatalf("transitions = %#v", transitions)
+	}
+	ref, err := ParseSoloSessionRef(transitions[0].SessionRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.SpokeID != spokeID || ref.SoloProjectID != 8 || ref.SoloProcessID != 77 || ref.LaunchNonce != testNonce || ref.Harness != "opencode" || ref.AgentToolID != 9 {
+		t.Fatalf("session ref = %#v", ref)
+	}
+}
+
+func testSoloConfig(t *testing.T) Config {
+	config := testConfig(t)
+	config.Launcher = "solo"
+	config.RoleCommands = nil
+	config.SoloBindings = map[string]SoloBinding{
+		"builder":      {ProjectID: 8, AgentToolID: 9, Harness: "opencode", ExtraArgs: []string{}},
+		"orchestrator": {ProjectID: 12, AgentToolID: 13, Harness: "claude", ExtraArgs: []string{}},
+	}
+	config.SoloReadyTimeout = time.Second
+	return config
+}
+
+func firstSoloCall(t *testing.T, calls []soloCallRecord, name string) soloCallRecord {
+	t.Helper()
+	for _, call := range calls {
+		if call.name == name {
+			return call
+		}
+	}
+	t.Fatalf("missing Solo call %s: %#v", name, calls)
+	return soloCallRecord{}
 }
 
 func testConfig(t *testing.T) Config {
