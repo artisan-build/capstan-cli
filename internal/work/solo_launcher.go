@@ -85,6 +85,7 @@ type SoloLauncher struct {
 }
 
 var errSoloProcessUnavailable = errors.New("solo process is unavailable")
+var errSoloSessionNotAlive = errors.New("reusable Solo session is not alive")
 
 // NewSoloLauncher returns a production Solo launcher over an injected MCP caller.
 func NewSoloLauncher(client SoloCaller, readyTimeout time.Duration) *SoloLauncher {
@@ -103,9 +104,12 @@ func (l *SoloLauncher) Launch(ctx context.Context, spec LaunchSpec) (string, err
 			return "", errors.New("reusable Solo session identity does not match the current claim")
 		}
 		if err := l.waitIdle(ctx, ref); err != nil {
-			return "", err
+			if !errors.Is(err, errSoloProcessUnavailable) && !errors.Is(err, errSoloSessionNotAlive) {
+				return "", err
+			}
+		} else {
+			return spec.ExistingSessionRef, nil
 		}
-		return spec.ExistingSessionRef, nil
 	}
 	var spawnText string
 	if err := l.client.Call(ctx, "spawn_agent", map[string]any{
@@ -284,7 +288,7 @@ func (l *SoloLauncher) waitIdle(ctx context.Context, ref SoloSessionRef) error {
 			return err
 		}
 		if status.Kind != "agent" || status.Status != "Running" || !statusMatchesRef(status, ref) {
-			return errors.New("reusable Solo session is not alive")
+			return errSoloSessionNotAlive
 		}
 		if status.AgentState.Idle {
 			return nil

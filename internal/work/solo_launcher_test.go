@@ -19,6 +19,7 @@ type fakeSoloCall struct {
 	outputs      []string
 	status       soloProcessStatus
 	statuses     []soloProcessStatus
+	statusErrors []error
 	lastInput    string
 	sendFailures int
 }
@@ -54,6 +55,11 @@ func (f *fakeSoloCall) Call(_ context.Context, name string, arguments any, targe
 		}
 		value = map[string]any{"process_id": 77}
 	case "get_process_status":
+		if len(f.statusErrors) > 0 {
+			err := f.statusErrors[0]
+			f.statusErrors = f.statusErrors[1:]
+			return err
+		}
 		value = f.status
 		if len(f.statuses) > 0 {
 			value = f.statuses[0]
@@ -185,6 +191,36 @@ func TestSoloLauncherIdleWakeAndDirectiveActions(t *testing.T) {
 					t.Fatalf("pointer text call = %#v", call.arguments)
 				}
 			}
+		}
+	}
+}
+
+func TestSoloLauncherColdSpawnsOnlyWhenMatchingReusableProcessIsGone(t *testing.T) {
+	oldRef, _ := (SoloSessionRef{SpokeID: 42, SoloProjectID: 8, SoloProcessID: 66, LaunchNonce: testNonce, Harness: "claude", AgentToolID: 9}).String()
+	spec := LaunchSpec{Role: "orchestrator", SpokeID: 42, LaunchNonce: testRespawnNonce, ExistingSessionRef: oldRef, SoloBinding: SoloBinding{ProjectID: 8, AgentToolID: 9, Harness: "claude", ExtraArgs: []string{}}}
+	ready := "────────────────────────────────────────────────────────────────\n❯\n────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent"
+
+	fake := &fakeSoloCall{statusErrors: []error{soloRPCError{code: -32602}}, outputs: []string{ready}}
+	launcher := NewSoloLauncher(fake, time.Second)
+	launcher.pollInterval = time.Millisecond
+	ref, err := launcher.Launch(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := ParseSoloSessionRef(ref)
+	if err != nil || decoded.SoloProcessID != 77 || decoded.LaunchNonce != testRespawnNonce {
+		t.Fatalf("cold ref = %#v, %v", decoded, err)
+	}
+	firstSoloCall(t, fake.calls, "spawn_agent")
+
+	fake = &fakeSoloCall{statusErrors: []error{errors.New("transport failure")}}
+	launcher = NewSoloLauncher(fake, time.Second)
+	if _, err := launcher.Launch(context.Background(), spec); err == nil {
+		t.Fatal("non-absence status failure cold-spawned")
+	}
+	for _, call := range fake.calls {
+		if call.name == "spawn_agent" {
+			t.Fatal("non-absence status failure reached spawn")
 		}
 	}
 }
