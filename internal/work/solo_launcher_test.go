@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -390,7 +391,7 @@ func TestSoloLauncherUnhealthyPTYClosesExactProcess(t *testing.T) {
 }
 
 func TestPointerRejectsOversizeWithoutLeakingIt(t *testing.T) {
-	links := testLinks("https://server.example/" + strings.Repeat("x", 300))
+	links := testLinks("https://server.example/" + strings.Repeat("x", 900))
 	path := filepath.Join(t.TempDir(), linksFilename)
 	if err := atomicPrivateWrite(path, mustJSON(t, links)); err != nil {
 		t.Fatal(err)
@@ -408,4 +409,131 @@ func mustJSON(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// Synthetic signed URLs keep production credentials out of the regression fixture.
+func pointerTestURL(size int) string {
+	base := "https://" + strings.Repeat("long-installation.", 10) + "example/"
+	suffix := "/brief?expires=1793000000&signature=" + strings.Repeat("a", 64)
+	if size == 239 {
+		base = "https://server.example/"
+	}
+	return base + strings.Repeat("p", size-len(base)-len(suffix)) + suffix
+}
+
+func TestSoloPointerChunkedDelivery(t *testing.T) {
+	for _, size := range []int{239, 600, 838} {
+		for _, action := range []string{"gate", "resend", "send_enter"} {
+			t.Run(fmt.Sprintf("%d/%s", size, action), func(t *testing.T) {
+				brief := pointerTestURL(size)
+				want := "Fetch and follow " + brief + ", nonce " + testNonce + "."
+				if len(brief) != size || len(want) != size+62 {
+					t.Fatal("fixture length changed")
+				}
+				root := t.TempDir()
+				path := filepath.Join(root, linksFilename)
+				if err := atomicPrivateWrite(path, mustJSON(t, map[string]string{"brief": brief})); err != nil {
+					t.Fatal(err)
+				}
+				pointer, err := pointerFromLinks(path, testNonce)
+				if err != nil || pointer != want {
+					t.Fatalf("pointer did not preserve exact URL and nonce: %v", err)
+				}
+				ref, _ := (SoloSessionRef{SpokeID: 42, SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "codex", AgentToolID: 9}).String()
+				var wrapped strings.Builder
+				for i := 0; i < len(want); i += 80 {
+					wrapped.WriteString(want[i:min(i+80, len(want))])
+					wrapped.WriteString("\n  ")
+				}
+				fake := &fakeSoloCall{status: soloProcessStatus{ID: 77, Name: "capstan-builder-" + testNonce, Kind: "agent", Status: "Running"}, outputs: []string{wrapped.String()}}
+				if action != "send_enter" {
+					// A partial chunk echo must not complete delivery; wait for the full wrapped echo.
+					fake.outputs = append([]string{want[:299]}, fake.outputs...)
+				}
+				launcher := NewSoloLauncher(fake, time.Second)
+				launcher.pollInterval = time.Millisecond
+				switch action {
+				case "gate":
+					err = launcher.OpenGate(context.Background(), ref, filepath.Join(root, gateFilename), testNonce)
+				case "resend":
+					err = launcher.ResendPointer(context.Background(), ref, path, testNonce, testDirectiveID)
+				case "send_enter":
+					err = launcher.SendEnter(context.Background(), ref, path, testNonce, testDirectiveID)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				var delivered strings.Builder
+				chunks, enters := 0, 0
+				for _, call := range fake.calls {
+					if call.name != "send_input" {
+						continue
+					}
+					if chunk, ok := call.arguments["input"].(string); ok {
+						if len(chunk) > 299 || len(chunk) == 0 || call.arguments["submit"] != false || enters != 0 {
+							t.Fatal("invalid PTY chunk or premature submission")
+						}
+						delivered.WriteString(chunk)
+						chunks++
+					}
+					if reflect.DeepEqual(call.arguments["bytes"], []int{13}) {
+						enters++
+					}
+				}
+				if enters != 1 || len(fake.outputs) != 0 {
+					t.Fatal("missing separate Enter or full-pointer echo verification")
+				}
+				if action != "send_enter" && (delivered.String() != want || chunks != (len(want)+298)/299) {
+					t.Fatal("pointer clipped, modified, or not chunked at the PTY boundary")
+				}
+				if action == "gate" {
+					if data, err := os.ReadFile(filepath.Join(root, gateFilename) + "." + testNonce); err != nil || string(data) != ref+"\n" {
+						t.Fatal("delivery marker missing")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSoloPointerTotalBoundAndRejectedSends(t *testing.T) {
+	for _, size := range []int{600, 839} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			root := t.TempDir()
+			if err := atomicPrivateWrite(filepath.Join(root, linksFilename), mustJSON(t, map[string]string{"brief": pointerTestURL(size)})); err != nil {
+				t.Fatal(err)
+			}
+			ref, _ := (SoloSessionRef{SpokeID: 42, SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "codex", AgentToolID: 9}).String()
+			fake := &fakeSoloCall{status: soloProcessStatus{ID: 77, Name: "capstan-builder-" + testNonce, Kind: "agent", Status: "Running"}, sendFailures: 2}
+			err := NewSoloLauncher(fake, time.Second).OpenGate(context.Background(), ref, filepath.Join(root, gateFilename), testNonce)
+			if err == nil {
+				t.Fatal("invalid delivery succeeded")
+			}
+			if size == 839 {
+				if err.Error() != "work pointer exceeds the 900-byte limit" || len(fake.calls) != 0 {
+					t.Fatalf("over-total-bound pointer reached Solo or leaked inputs: %v", err)
+				}
+			} else {
+				sends := 0
+				for _, call := range fake.calls {
+					if call.name == "send_input" {
+						sends++
+						if _, ok := call.arguments["input"]; !ok {
+							t.Fatal("Enter sent after rejected text")
+						}
+					}
+				}
+				if sends != 2 {
+					t.Fatalf("expected two rejected text sends, got %d (delivery error: %v)", sends, err)
+				}
+				last := fake.calls[len(fake.calls)-1]
+				if last.name != "close_process" || last.arguments["process_id"] != int64(77) || last.arguments["project_id"] != int64(8) {
+					t.Fatal("two rejected sends did not close exact process")
+				}
+			}
+			if _, err := os.Stat(filepath.Join(root, gateFilename) + "." + testNonce); !os.IsNotExist(err) {
+				t.Fatal("failed delivery wrote a marker")
+			}
+		})
+	}
 }
