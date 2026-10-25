@@ -67,8 +67,17 @@ func (s SoloSelfTester) Run(ctx context.Context, config Config, output io.Writer
 	if err != nil {
 		return SelfTestEvidence{}, err
 	}
+	retained := make(map[string]Config)
+	capture := func() {
+		for ref, config := range selfTestSessions(configPath, nonce) {
+			retained[ref] = config
+		}
+	}
 	defer func() {
-		s.cleanupSession(configPath, nonce)
+		capture()
+		for ref, config := range retained {
+			s.terminateSession(config, ref)
+		}
 		cleanup()
 	}()
 	tick := s.Tick
@@ -77,8 +86,11 @@ func (s SoloSelfTester) Run(ctx context.Context, config Config, output io.Writer
 	}
 	last := SelfTestEvidence{}
 	for {
-		if err := tick(testCtx, configPath); err != nil {
-			return last, err
+		capture()
+		tickErr := tick(testCtx, configPath)
+		capture()
+		if tickErr != nil {
+			return last, tickErr
 		}
 		current := stub.snapshot()
 		for _, rung := range newlyObserved(last, current) {
@@ -105,41 +117,47 @@ func (s SoloSelfTester) Run(ctx context.Context, config Config, output io.Writer
 	}
 }
 
-func (s SoloSelfTester) cleanupSession(configPath, nonce string) {
+func selfTestSessions(configPath, nonce string) map[string]Config {
+	sessions := make(map[string]Config)
 	config, err := LoadConfig(configPath)
 	if err != nil {
-		return
+		return sessions
 	}
 	state, err := NewStateStore(config.StateFile, config.WorkDir).Load()
 	if err != nil {
-		return
+		return sessions
 	}
 	binding := config.SoloBindings["orchestrator"]
-	for _, item := range state.Items {
-		if item == nil || item.SessionRef == "" {
+	for id, item := range state.Items {
+		if id != testSelfItemID || item == nil || item.TaskID != testSelfTaskID || item.Role != "orchestrator" || item.LaunchNonce != nonce || item.SessionRef == "" {
 			continue
 		}
 		ref, err := ParseSoloSessionRef(item.SessionRef)
 		if err != nil || ref.LaunchNonce != nonce || ref.SpokeID != item.SpokeID || ref.SoloProjectID != binding.ProjectID || ref.AgentToolID != binding.AgentToolID || ref.Harness != binding.Harness {
 			continue
 		}
-		timeout := config.SoloCallTimeout
-		if timeout <= 0 {
-			timeout = 30 * time.Second
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		if s.Terminate != nil {
-			_ = s.Terminate(ctx, config, item.SessionRef)
-			cancel()
-			continue
-		}
-		client, clientErr := NewStdioSoloClient(ctx, config.SoloMCPPath, timeout)
-		if clientErr == nil {
-			_ = NewSoloLauncher(client, config.SoloReadyTimeout).Terminate(ctx, item.SessionRef)
-			_ = client.Close()
-		}
-		cancel()
+		sessions[item.SessionRef] = config
 	}
+	return sessions
+}
+
+func (s SoloSelfTester) terminateSession(config Config, sessionRef string) {
+	timeout := config.SoloCallTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	if s.Terminate != nil {
+		_ = s.Terminate(ctx, config, sessionRef)
+		cancel()
+		return
+	}
+	client, clientErr := NewStdioSoloClient(ctx, config.SoloMCPPath, timeout)
+	if clientErr == nil {
+		_ = NewSoloLauncher(client, config.SoloReadyTimeout).Terminate(ctx, sessionRef)
+		_ = client.Close()
+	}
+	cancel()
 }
 
 func (s *selfTestStub) serveHTTP(writer http.ResponseWriter, request *http.Request) {

@@ -90,6 +90,12 @@ then asks for one explicit project/tool binding per leaf role and one for the or
 automation, pass `--non-interactive` and repeat
 `--binding role=project_id:agent_tool_id:harness`. Setup never resolves an id from a display name.
 
+To run selected leaf roles in remote Amp orbs, repeat `--amp-role builder` instead of supplying a
+Solo binding for those roles. Keep `--binding orchestrator=project_id:agent_tool_id:harness`.
+Setup discovers an absolute Amp executable path, or accepts `--amp-path /absolute/path/to/amp`,
+and writes version 3 with `launcher: "hybrid"`, `amp_path`, and `amp_roles`. Version 2 Solo configs
+keep their existing behavior. Amp roles advertise provider `claude` and run in `claude-code` mode.
+
 The generated file defaults to `$XDG_CONFIG_HOME/capstan/work.json`, falling back to
 `$HOME/.config/capstan/work.json`, and has mode `0600`. [`docs/work.example.json`](docs/work.example.json)
 shows the version 2 shape. Relative paths are resolved from the config file's directory. See
@@ -103,7 +109,7 @@ or stricter. The drain reads it after taking the non-blocking overlap lock. It s
 Authorization header and never writes it to state or output. `capstan_url` must use HTTPS except for
 localhost and loopback development.
 
-Each role needs an explicit Solo project id, agent-tool id, and harness. Prompt templates may use `{config_dir}`, `{fence}`, `{item_id}`,
+Each non-Amp role needs an explicit Solo project id, agent-tool id, and harness. Prompt templates may use `{config_dir}`, `{fence}`, `{item_id}`,
 `{launch_nonce}`, `{links_file}`, `{prompt_file}`, `{role}`, `{seat_fence}`, `{session_ref}`,
 `{task_id}`, and `{work_dir}`. Unknown placeholders stop configuration loading. Signed URLs are kept
 only in each item's private `links.json`, so prompts should tell the worker to read `{links_file}`
@@ -118,7 +124,7 @@ claiming.
 
 Leaf `max_concurrent` and `orchestrator_capacity` are separate, but their sum cannot exceed the
 server batch limit of 25. Every claim tick reports both capacities, the current held leaf count,
-roles, capabilities, role providers, and fenced held items. The drain runs only `send_enter`,
+roles, capabilities, role providers, and fenced held items. The drain runs only `nudge`, `send_enter`,
 `resend_pointer`, or `respawn` directives returned by that tick. Directive outcomes are durable and
 reported on the next tick; replay does not execute a completed directive twice.
 
@@ -133,6 +139,24 @@ spawns use the claim's server-issued UUIDv7 nonce. A server `respawn` directive 
 replacement nonce. On a warm orchestrator wake, the session reference keeps the process's original
 nonce while the signed pointer and `delivered` transition use the newly claimed item's nonce.
 `send_enter`, `resend_pointer`, and `respawn` run only when the server returns them.
+
+Amp claims require the task's explicit lowercase GitHub `repository` (`owner/repo`). A missing or
+invalid repository releases the claim without dispatch. The independent `workflow_ref` pins the
+method repository and is never used to select the orb's code repository. Claim and renew requests
+negotiate `item_shape: "repository-v1"`; a changed repository releases the affected Amp holding
+under its fence without stopping sibling recovery or killing the thread.
+
+The Amp lane checks the CLI version, resolves the project with `amp projects get/create`, then
+dispatches `amp -ox` with a short Capstan MCP `work_brief` pointer. It records the first stream event's
+thread identity before routing the claim. The stream continues detached with bounded private output.
+Local stream exit does not release remote work. An `awaiting_verification` renewal keeps the claim;
+acceptance eventually returns `lost`, which forgets the holding without archiving the thread.
+On every renewed `routed` Amp holding, the drain fetches fresh signed steers and sends unseen item-scoped
+text to the same thread with `amp threads continue T-… -ox <message>`. This includes ordinary orchestrator
+steers and corrections, even when a finish/corrections episode happened between ticks. Deadline nudges use that command
+too. Only a server `respawn` directive can start a replacement thread. See the [Work guide](docs/work.md)
+for recovery limits. The drain needs no GitHub credential and performs no GitHub verification;
+the Solo orchestrator judges work with its own login.
 
 Setup can print the launchd or systemd files, or install and activate only Capstan's dedicated user
 job with `--schedule install`. Run one tick manually with:

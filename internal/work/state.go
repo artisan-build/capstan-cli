@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 const stateVersion = 1
@@ -22,17 +23,21 @@ type State struct {
 
 // ItemState contains the minimum fenced local session data needed after a crash.
 type ItemState struct {
-	TaskID           string          `json:"task_id"`
-	Role             string          `json:"role"`
-	Fence            int             `json:"fence"`
-	Phase            string          `json:"phase"`
-	WorkDir          string          `json:"work_dir"`
-	LaunchNonce      string          `json:"launch_nonce"`
-	SessionRef       string          `json:"session_ref,omitempty"`
-	SeatFence        int             `json:"seat_fence,omitempty"`
-	SpokeID          int64           `json:"spoke_id,omitempty"`
-	PendingLaunchKey string          `json:"pending_launch_key,omitempty"`
-	Directive        *DirectiveState `json:"directive,omitempty"`
+	Repository        string          `json:"repository,omitempty"`
+	CorrectionPending bool            `json:"correction_pending,omitempty"`
+	DeliveredSteers   []string        `json:"delivered_steers,omitempty"`
+	PendingSteers     []string        `json:"pending_steers,omitempty"`
+	TaskID            string          `json:"task_id"`
+	Role              string          `json:"role"`
+	Fence             int             `json:"fence"`
+	Phase             string          `json:"phase"`
+	WorkDir           string          `json:"work_dir"`
+	LaunchNonce       string          `json:"launch_nonce"`
+	SessionRef        string          `json:"session_ref,omitempty"`
+	SeatFence         int             `json:"seat_fence,omitempty"`
+	SpokeID           int64           `json:"spoke_id,omitempty"`
+	PendingLaunchKey  string          `json:"pending_launch_key,omitempty"`
+	Directive         *DirectiveState `json:"directive,omitempty"`
 }
 
 // DirectiveState records a directive before execution and its one later-tick outcome.
@@ -115,9 +120,25 @@ func (s *StateStore) Save(state State) error {
 
 func (s *StateStore) validateItem(id string, item *ItemState) error {
 	if !validUUID(id) || item == nil || !validUUID(item.TaskID) || item.Fence < 1 || item.Role == "" ||
-		(item.Phase != "claimed" && item.Phase != "launched" && item.Phase != "delivered" && item.Phase != "routed") ||
+		(item.Phase != "claimed" && item.Phase != "launched" && item.Phase != "delivered" && item.Phase != "routed" && item.Phase != "awaiting_verification") ||
 		!validUUID(item.LaunchNonce) || item.SpokeID < 0 {
 		return errors.New("invalid item fields")
+	}
+	if len(item.DeliveredSteers) > 256 || len(item.PendingSteers) > 256 {
+		return errors.New("too many delivered steers")
+	}
+	for _, steer := range append(append([]string(nil), item.DeliveredSteers...), item.PendingSteers...) {
+		if !validUUID(steer) {
+			return errors.New("invalid delivered steer")
+		}
+	}
+	if item.Repository != "" && !validRepository(item.Repository) {
+		return errors.New("invalid repository")
+	}
+	if strings.HasPrefix(item.SessionRef, "amp:") {
+		if _, err := ParseAmpSessionRef(item.SessionRef); err != nil || item.Repository == "" {
+			return errors.New("invalid Amp holding")
+		}
 	}
 	wantDir := filepath.Join(s.workDir, fmt.Sprintf("%s-f%d", id, item.Fence))
 	actual, err := filepath.Abs(item.WorkDir)
@@ -197,7 +218,7 @@ func writePrivate(path, content string) error {
 func validUUID(value string) bool { return uuidPattern.MatchString(value) }
 
 func supportedDirective(kind string) bool {
-	return kind == "send_enter" || kind == "resend_pointer" || kind == "respawn"
+	return kind == "send_enter" || kind == "resend_pointer" || kind == "respawn" || kind == "nudge"
 }
 
 func safeID(value string) string {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"reflect"
 	"testing"
 
 	workprotocol "github.com/artisan-build/capstan-cli/internal/work"
@@ -29,6 +30,21 @@ func TestWorkDrainCommandPassesExplicitConfigAndPrintsSafeLog(t *testing.T) {
 	}
 	if gotPath != "/private/work.json" || stdout.String() != "queue empty\n" {
 		t.Fatalf("path, stdout = %q, %q", gotPath, stdout.String())
+	}
+}
+
+func TestWorkSetupCommandPassesRepeatableAmpRolesWithoutConvertingSolo(t *testing.T) {
+	var got workprotocol.SetupOptions
+	command := newWorkCommandWithSetup(nil, func(_ context.Context, options workprotocol.SetupOptions, _ io.Reader, _ io.Writer) error {
+		got = options
+		return nil
+	})
+	command.SetArgs([]string{"setup", "--non-interactive", "--amp-role", "builder", "--amp-role", "reviewer", "--amp-path", "/opt/amp", "--binding", "orchestrator=12:35:opencode"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.AmpRoles, []string{"builder", "reviewer"}) || got.AmpPath != "/opt/amp" || len(got.Bindings) != 1 || got.Bindings["orchestrator"].Harness != "opencode" {
+		t.Fatalf("Amp options = %#v", got)
 	}
 }
 

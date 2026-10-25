@@ -41,6 +41,8 @@ type Config struct {
 	PromptTemplate             string
 	OrchestratorPromptTemplate string
 	Launcher                   string
+	AmpPath                    string
+	AmpRoles                   []string
 	RoleCommands               map[string][]string
 	SoloMCPPath                string
 	SoloCallTimeout            time.Duration
@@ -81,6 +83,13 @@ type LaunchSpec struct {
 	SpokeID            int64
 	LaunchNonce        string
 	SoloBinding        SoloBinding
+	Repository         string
+	ItemID             string
+}
+
+// MessageLauncher delivers bounded text without replacing a session.
+type MessageLauncher interface {
+	Continue(context.Context, string, string) error
 }
 
 // Launcher owns local session actions. Protocol, state, API, and recovery remain in Runner.

@@ -18,9 +18,10 @@ import (
 const maxPointerBytes = 299
 
 var (
-	claudeReadyMarker   = regexp.MustCompile(`(?m)^[ \t]*─{8,}[ \t]*\r?\n[ \t]*❯[ \t]*\r?\n[ \t]*─{8,}[ \t]*\r?\n[^\r\n]*⏵⏵[ \t]+bypass permissions on[ \t]+\(shift\+tab to cycle\)[^\r\n]*$`)
-	codexReadyMarker    = regexp.MustCompile(`(?m)^[ \t]*›[ \t]+Ask Codex to do anything[ \t]*$`)
-	openCodeReadyMarker = regexp.MustCompile(`(?m)^[ \t]*┃[ \t]+Ask anything, / for commands, @ for context…[ \t]*$`)
+	claudeReadyMarker     = regexp.MustCompile(`(?m)^[ \t]*─{8,}[ \t]*\r?\n[ \t]*❯[ \t]*\r?\n[ \t]*─{8,}[ \t]*\r?\n[^\r\n]*⏵⏵[ \t]+bypass permissions on[ \t]+\(shift\+tab to cycle\)[^\r\n]*$`)
+	codexReadyMarker      = regexp.MustCompile(`(?m)^[ \t]*›[ \t]+Ask Codex to do anything[ \t]*$`)
+	openCodeReadyMarker   = regexp.MustCompile(`(?m)^[ \t]*┃[ \t]+Ask anything, / for commands, @ for context…[ \t]*$`)
+	openCodeReadyV2Marker = regexp.MustCompile(`(?m)^[ \t]*┃[ \t]*\r?\n[ \t]*┃[ \t]+Ask anything… "[^"\r\n]+"[ \t]*\r?\n[ \t]*┃[ \t]*\r?\n[ \t]*┃[ \t]+[^\r\n]+ · [^\r\n]+\r?\n[ \t]*╹[▀─━]+[ \t]*\r?\n[^\r\n]*shift\+tab agents[ \t]+ctrl\+p commands[ \t]*\r?\n(?:[^\r\n]*\r?\n)*[^\r\n]*\b[0-9]+\.[0-9]+\.[0-9]+[ \t]*$`)
 )
 
 // SoloSessionRef is the canonical, non-secret identity handed to Capstan.
@@ -401,10 +402,35 @@ func readyForHarness(harness, output string) bool {
 	case "codex":
 		return codexReadyMarker.MatchString(output)
 	case "opencode":
-		return openCodeReadyMarker.MatchString(output)
+		return openCodeReadyMarker.MatchString(output) || openCodeReadyV2Marker.MatchString(output)
 	default:
 		return false
 	}
+}
+
+// Continue sends text and Enter only after checking the exact nonce-bound process identity.
+func (l *SoloLauncher) Continue(ctx context.Context, sessionRef, text string) error {
+	ref, err := ParseSoloSessionRef(sessionRef)
+	if err != nil || !validSessionMessage(text) {
+		return errors.New("solo continuation inputs are invalid")
+	}
+	// Keep each PTY write beneath the proven pointer boundary; never clip long steers.
+	var chunk strings.Builder
+	for _, r := range text {
+		if chunk.Len()+len(string(r)) > maxPointerBytes {
+			if err := l.sendText(ctx, ref, chunk.String()); err != nil {
+				return err
+			}
+			chunk.Reset()
+		}
+		chunk.WriteRune(r)
+	}
+	if chunk.Len() > 0 {
+		if err := l.sendText(ctx, ref, chunk.String()); err != nil {
+			return err
+		}
+	}
+	return l.sendBytes(ctx, ref, []int{13})
 }
 
 func pointerFromLinks(path, nonce string) (string, error) {

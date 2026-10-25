@@ -42,6 +42,7 @@ func newRootCommandWithRunners(reader runners.HealthReader, now func() time.Time
 	rootCmd.AddCommand(newWhoamiCommand(&server))
 	rootCmd.AddCommand(newWorkCommand(workprotocol.Execute))
 	rootCmd.AddCommand(newWorkGateCommand())
+	rootCmd.AddCommand(newWorkAmpStreamCommand())
 
 	return rootCmd
 }

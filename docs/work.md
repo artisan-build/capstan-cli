@@ -1,7 +1,7 @@
 # Capstan Work setup
 
-`capstan work drain` is a one-shot command. Solo runs the agents; launchd or systemd starts a fresh
-drain tick each minute.
+`capstan work drain` is a one-shot command. Solo runs local agents, and optional Amp leaf roles run
+in remote orbs. Launchd or systemd starts a fresh drain tick each minute.
 
 ## Configure the machine
 
@@ -12,7 +12,7 @@ bindings:
 capstan work setup
 ```
 
-Each role needs a numeric Solo project id, a numeric agent-tool id, and its harness (`claude`, `codex`,
+Each Solo role needs a numeric Solo project id, a numeric agent-tool id, and its harness (`claude`, `codex`,
 or `opencode`). The orchestrator has its own binding and capacity slot. Display names are shown for
 people, but setup validates and saves the ids.
 
@@ -38,6 +38,34 @@ Setup writes `work.json` and its prompt files atomically in a private directory.
 prompt files use mode `0600`; state and item directories use `0700`. The credential is a separate
 private file containing a bound `capstan.work.drain` bearer.
 
+### Amp leaf roles
+
+Add repeatable `--amp-role builder --amp-role reviewer` flags to non-interactive setup, omit Solo
+bindings for those roles, and keep the orchestrator's Solo binding. Setup discovers `amp` on PATH
+and stores its absolute path; `--amp-path /absolute/path/to/amp` overrides discovery. It does not
+read a token, change a role to Amp implicitly, or update Amp. The existing Amp installation owns
+its authentication.
+
+Setup writes version 3 only when Amp roles are explicit. All the version 2 fields remain, with these
+changes (this fragment is not a complete config):
+
+```json
+{
+  "version": 3,
+  "launcher": "hybrid",
+  "amp_path": "/absolute/path/to/amp",
+  "amp_roles": ["builder", "reviewer"],
+  "roles": ["builder", "reviewer", "orchestrator"],
+  "role_providers": {"builder": "claude", "reviewer": "claude", "orchestrator": "opencode"},
+  "solo_bindings": {
+    "orchestrator": {"project_id": 12, "agent_tool_id": 34, "harness": "opencode", "extra_args": []}
+  }
+}
+```
+
+An Amp role cannot also have a Solo binding. Every remaining role needs its Solo binding, and
+the orchestrator must stay local. Version 2 Solo configs and version 1 process configs remain supported.
+
 ## Schedule
 
 `--schedule print` prints a complete launchd plist on macOS or a systemd user service and timer on
@@ -54,7 +82,7 @@ launchd job or runs `systemctl --user enable --now capstan-work.timer`. Other us
 The drain asks Capstan what this machine may take. The claim response supplies the authoritative
 spoke id. Local configuration and request fields cannot replace it.
 
-A new leaf or cold orchestrator launch follows this sequence:
+A Solo leaf or cold orchestrator launch follows this sequence:
 
 1. Spawn the configured Solo agent tool with the claim's server-issued UUIDv7 launch nonce.
 2. Wait for the harness prompt. If Solo shows the folder-trust screen, send Down and Enter as separate
@@ -80,9 +108,92 @@ Capstan chooses repair actions. The drain has no repair timer or local retry lad
   echo.
 - `respawn` closes the exact old Solo process and starts the mapped tool with the nonce in the
   directive.
+- `nudge` sends bounded text and a separate Enter to the exact identity-checked Solo process.
+  Generic process launchers report this action as unsupported.
 
 If the Solo PTY rejects the same input twice, the launcher closes that exact process and reports the
 observed action failure. A later drain tick follows the server's claim and directive response.
+
+### Remote dispatch and verification
+
+Every claim and renew negotiates `item_shape: "repository-v1"`. Amp work must name the task's
+explicit lowercase GitHub `repository`, such as `example/application`. Null or invalid repository
+values release the Amp claim with a redacted reason. Solo work does not require this field.
+The `workflow_ref` identifies the workflow repository; it may differ from the target code repository
+and never supplies an Amp project. A repository change invalidates that Amp binding: the drain
+releases the affected item under its current fence and forgets it after success or a conflict response.
+If release fails, it retains that holding for retry. It never kills or archives the old thread.
+
+The configured executable must report Amp CLI `0.0.1792929650` or newer. Commands use direct argv,
+with no shell or automatic update. The drain gets the exact project with
+`amp projects get owner/repo --json`. Only an explicit not-found result permits
+`amp projects create https://github.com/owner/repo --personal --json`. It then re-gets the project,
+including after a competing create, to validate its id, Amp URL, and repository association.
+
+Dispatch uses:
+
+```text
+amp -ox <short MCP pointer> --project owner/repo --mode claude-code --title <nonsecret title> --stream-json --no-archive-after-execute
+```
+
+The pointer names Capstan MCP `work_brief`, the item, and its launch nonce. It asks the orb to retry
+briefly while the new binding becomes visible and contains no signed URL or bearer. The first
+bounded event must be `system/init` with a valid `T-…` session id. Its canonical `amp:v1:` reference
+contains exactly `project_id`, `thread_id`, and `thread_url`. The delivered transition records that
+identity with the current nonce before the routed transition.
+
+A private detached helper drains the remaining stream. Initialization waits at most one minute;
+the helper bounds its turn to 24 hours and caps stdout at 1 MiB and stderr at 64 KiB. Other Amp
+commands have a two-minute timeout and 64 KiB output limits. A saved project binding and init event let recovery reuse
+the dispatch. If a start marker exists without an init event, recovery retains the item, nonce,
+marker, and empty session reference without dispatching again under that nonce. It logs only the
+item id and fence, continues sibling recovery, and includes both holdings in the Claim heartbeat.
+It does not invent receipt metadata or filter repair directives for that ambiguous holding, so a
+server-authorized `respawn` with a rotated nonce can reach the existing repair path. Each tick still
+re-waits the one-minute initialization bound for every ambiguous item before moving on. This delay
+can accumulate across ambiguous holdings. The CLI never archives or deletes a thread as cleanup.
+
+Remote liveness comes from Capstan. A local streaming process can exit while the orb remains alive.
+`awaiting_verification` is held and renewed without another launch or routing action. When the Solo
+orchestrator accepts the finish, renewal eventually returns `lost` and local state is forgotten.
+The thread is left alone. The drain never calls `gh`, checks a PR, or needs a GitHub credential.
+
+Corrections move the same item from `awaiting_verification` back to `routed`. On every renewed
+`routed` Amp holding, the drain fetches the refreshed signed `steers` URL and continues the existing
+thread with each unseen item-scoped steer. Ordinary orchestrator item steers arrive through this
+same path. A finish/corrections episode can happen entirely between drain ticks; delivery does not
+depend on observing the intermediate waiting state:
+
+```text
+amp threads continue T-… -ox <bounded message>
+```
+
+Steer ids and pending-delivery state survive a crash; steer text stays out of recovery metadata,
+logs, and thread titles. Later renewals still poll but do not resend delivered steers. A crash between
+remote delivery and the local acknowledgment may retry the text. The delivery ledger holds at most
+256 delivered steer ids per claim and fails closed when full. Pending ids are saved before delivery.
+If a known pending steer is absent from the response, that item's delivery remains pending.
+An empty poll with no pending ids succeeds without sending anything. Polling steers does not report
+progress or reset the server's work deadline.
+
+Steer text is limited to 8,000 Unicode characters and at most 32,000 UTF-8 bytes. The signed response
+has its own 25,628,672-byte cap, sized for 256 entries with worst-case JSON-escaped Unicode and bounded
+metadata. Amp command output and stream events keep their separate 64 KiB cap. More than 256 returned
+entries fails that item closed; this client does not page server steers.
+
+A steer fetch, validation, or delivery failure skips that item for the tick and logs only its id and
+fence. Pending ids survive for retry; the drain still recovers siblings, sends the claim heartbeat,
+and handles their directives. It also skips directives for an item whose delivery or repository
+binding failed that tick. A local persistence failure can still stop the tick.
+
+Polling marks all returned steers read, including task-wide entries that the drain does not deliver.
+The orb can still read recent entries within the server's retention window. A known pending id that
+ages out requires operator attention; it is never silently acknowledged.
+
+The server's deadline `nudge` uses the same continuation command. Amp `send_enter` and
+`resend_pointer` repairs continue that exact thread with an MCP pointer. Only an authorized `respawn`
+starts a fresh thread under the server's rotated nonce; its outcome reports the replacement reference.
+The drain has no local continuation timer or GitHub acceptance decision.
 
 ## Setup self-test
 
@@ -92,6 +203,8 @@ the configured Capstan server. The stub records five rungs: claim, spawn, nonce-
 milestone, and done. Each observed rung is printed. Missing evidence or a timeout fails setup; no rung
 is inferred from Solo idle state.
 
-The command runs one final drain tick after `done`, checks that local state dropped the completed claim,
-and removes its private temporary directory. The same launcher and session identity then support a later
+The command retains the exact nonce-bound session before its final lost/forget tick. It checks that
+local state dropped the completed claim, closes only that exact Solo process on success or failure,
+and removes its private temporary directory. This self-test exercises Solo even in hybrid mode;
+it makes no Amp request. The same launcher and session identity then support a later
 live AC10 run against Capstan; passing the loopback self-test is not reported as live AC10 evidence.
