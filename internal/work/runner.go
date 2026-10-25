@@ -207,6 +207,10 @@ func (r *Runner) recover(ctx context.Context, state *State, skipped map[string]b
 				}
 				if item.SessionRef == "" && strings.HasPrefix(item.PendingLaunchKey, "initial:") {
 					if err := r.establish(ctx, state, id, item.PendingLaunchKey, ""); err != nil {
+						if errors.Is(err, errAmpDispatchUncertain) {
+							r.log(fmt.Sprintf("amp initialization deferred: item_id=%s fence=%d", safeID(id), item.Fence))
+							continue
+						}
 						return r.releaseAfterLaunchFailure(ctx, state, id, err)
 					}
 				}

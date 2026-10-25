@@ -145,9 +145,13 @@ identity with the current nonce before the routed transition.
 A private detached helper drains the remaining stream. Initialization waits at most one minute;
 the helper bounds its turn to 24 hours and caps stdout at 1 MiB and stderr at 64 KiB. Other Amp
 commands have a two-minute timeout and 64 KiB output limits. A saved project binding and init event let recovery reuse
-the dispatch. If a start marker exists without an init event, recovery retains the claim and refuses
-to dispatch a duplicate; this needs operator inspection or a server-authorized repair. The CLI never
-archives or deletes a thread as cleanup.
+the dispatch. If a start marker exists without an init event, recovery retains the item, nonce,
+marker, and empty session reference without dispatching again under that nonce. It logs only the
+item id and fence, continues sibling recovery, and includes both holdings in the Claim heartbeat.
+It does not invent receipt metadata or filter repair directives for that ambiguous holding, so a
+server-authorized `respawn` with a rotated nonce can reach the existing repair path. Each tick still
+re-waits the one-minute initialization bound for every ambiguous item before moving on. This delay
+can accumulate across ambiguous holdings. The CLI never archives or deletes a thread as cleanup.
 
 Remote liveness comes from Capstan. A local streaming process can exit while the orb remains alive.
 `awaiting_verification` is held and renewed without another launch or routing action. When the Solo
