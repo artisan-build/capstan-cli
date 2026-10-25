@@ -47,7 +47,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := r.recover(ctx, &state); err != nil {
+	skipped := make(map[string]bool)
+	if err := r.recover(ctx, &state, skipped); err != nil {
 		return err
 	}
 
@@ -104,7 +105,14 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := r.acknowledgeReported(&state); err != nil {
 		return err
 	}
-	if err := r.handleDirectives(ctx, &state, response.Directives); err != nil {
+	directives := make([]Directive, 0, len(response.Directives))
+	for _, directive := range response.Directives {
+		if skipped[directive.ItemID] {
+			continue
+		}
+		directives = append(directives, directive)
+	}
+	if err := r.handleDirectives(ctx, &state, directives); err != nil {
 		return err
 	}
 	for _, claim := range response.Items {
@@ -120,7 +128,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runner) recover(ctx context.Context, state *State) error {
+func (r *Runner) recover(ctx context.Context, state *State, skipped map[string]bool) error {
 	ids := sortedItemIDs(*state)
 	for offset := 0; offset < len(ids); offset += MaxBatch {
 		end := min(offset+MaxBatch, len(ids))
@@ -171,7 +179,11 @@ func (r *Runner) recover(ctx context.Context, state *State) error {
 				}
 				if r.ampRole(item.Role) || isAmpSession(item.SessionRef) {
 					if result.Item.Repository == nil || *result.Item.Repository != item.Repository || !validRepository(item.Repository) {
-						return errors.New("work renew changed the Amp repository")
+						skipped[id] = true
+						if err := r.releaseChangedRepository(ctx, state, id); err != nil {
+							return err
+						}
+						continue
 					}
 				}
 				if err := r.writeLinks(item, result.Item.Links); err != nil {
@@ -185,7 +197,12 @@ func (r *Runner) recover(ctx context.Context, state *State) error {
 				}
 				if (item.Phase == "routed" && isAmpSession(item.SessionRef)) || item.CorrectionPending {
 					if err := r.deliverSteers(ctx, state, id, result.Item.Links["steers"]); err != nil {
-						return err
+						if errors.Is(err, errSteerPersistence) {
+							return err
+						}
+						skipped[id] = true
+						r.log(fmt.Sprintf("steer delivery deferred: item_id=%s fence=%d", safeID(id), item.Fence))
+						continue
 					}
 				}
 				if item.SessionRef == "" && strings.HasPrefix(item.PendingLaunchKey, "initial:") {
@@ -218,6 +235,23 @@ func (r *Runner) recover(ctx context.Context, state *State) error {
 		}
 	}
 
+	return nil
+}
+
+func (r *Runner) releaseChangedRepository(ctx context.Context, state *State, id string) error {
+	item := state.Items[id]
+	err := r.api.Transition(ctx, TransitionRequest{ItemID: id, Fence: item.Fence, State: "released"})
+	if err != nil {
+		var apiErr APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != 409 {
+			r.log(fmt.Sprintf("repository binding release deferred: item_id=%s fence=%d", safeID(id), item.Fence))
+			return nil
+		}
+	}
+	if err := r.forget(state, id); err != nil {
+		return err
+	}
+	r.log(fmt.Sprintf("repository binding released: item_id=%s fence=%d", safeID(id), item.Fence))
 	return nil
 }
 

@@ -6,7 +6,26 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"unicode/utf8"
 )
+
+const (
+	maxSteerIDs            = 256
+	maxSteerCharacters     = 8000
+	maxSessionMessageBytes = utf8.UTFMax * maxSteerCharacters
+	// A four-byte code point can occupy twelve JSON bytes as an escaped surrogate pair.
+	// Reserve 4 KiB of metadata per entry and another 4 KiB for the envelope.
+	maxSteerResponseBytes = maxSteerIDs*(12*maxSteerCharacters+4096) + 4096
+)
+
+var errSteerPersistence = errors.New("steer delivery state could not be saved")
+
+func (r *Runner) saveSteerState(state State) error {
+	if err := r.store.Save(state); err != nil {
+		return errors.Join(errSteerPersistence, err)
+	}
+	return nil
+}
 
 // Steer is the signed worker steer representation; only item-scoped text is delivered.
 type Steer struct {
@@ -44,7 +63,7 @@ func (c *Client) Steers(ctx context.Context, signedURL string) ([]Steer, error) 
 	if response.StatusCode != http.StatusOK {
 		return nil, APIError{Status: response.StatusCode, Code: "request_failed"}
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxAmpJSON+1))
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxSteerResponseBytes+1))
 	var envelope struct {
 		Steers           []Steer `json:"steers"`
 		ReleaseRequested *struct {
@@ -53,7 +72,7 @@ func (c *Client) Steers(ctx context.Context, signedURL string) ([]Steer, error) 
 			Reason      string `json:"reason"`
 		} `json:"release_requested,omitempty"`
 	}
-	if err != nil || strictAmpJSON(data, &envelope) != nil || envelope.Steers == nil || len(envelope.Steers) > 256 {
+	if err != nil || strictBoundedJSON(data, &envelope, maxSteerResponseBytes) != nil || envelope.Steers == nil || len(envelope.Steers) > maxSteerIDs {
 		return nil, APIError{Code: "invalid_steers"}
 	}
 	return envelope.Steers, nil
@@ -72,6 +91,9 @@ func (r *Runner) deliverSteers(ctx context.Context, state *State, id, signedURL 
 	steers, err := reader.Steers(ctx, signedURL)
 	if err != nil {
 		return err
+	}
+	if len(steers) > maxSteerIDs {
+		return errors.New("work steer response exceeds the item ledger")
 	}
 	delivered := make(map[string]bool, len(item.DeliveredSteers))
 	for _, id := range item.DeliveredSteers {
@@ -95,7 +117,7 @@ func (r *Runner) deliverSteers(ctx context.Context, state *State, id, signedURL 
 		if steer.ItemID != id || delivered[steer.ID] || pending[steer.ID] {
 			continue
 		}
-		if len(item.PendingSteers) >= 256 {
+		if len(item.PendingSteers) >= maxSteerIDs {
 			return errors.New("work pending correction ledger is full")
 		}
 		item.PendingSteers = append(item.PendingSteers, steer.ID)
@@ -104,12 +126,12 @@ func (r *Runner) deliverSteers(ctx context.Context, state *State, id, signedURL 
 	if len(item.PendingSteers) == 0 {
 		if item.CorrectionPending {
 			item.CorrectionPending = false
-			return r.store.Save(*state)
+			return r.saveSteerState(*state)
 		}
 		return nil
 	}
 	item.CorrectionPending = true
-	if err := r.store.Save(*state); err != nil {
+	if err := r.saveSteerState(*state); err != nil {
 		return err
 	}
 	for _, steerID := range item.PendingSteers {
@@ -120,7 +142,7 @@ func (r *Runner) deliverSteers(ctx context.Context, state *State, id, signedURL 
 		if !ok || steer.ItemID != id {
 			return errors.New("work pending correction steer is unavailable")
 		}
-		if len(item.DeliveredSteers) >= 256 {
+		if len(item.DeliveredSteers) >= maxSteerIDs {
 			return errors.New("work correction delivery ledger is full")
 		}
 		// Pending is durable before execution; a crash after delivery retries rather than loses text.
@@ -128,11 +150,11 @@ func (r *Runner) deliverSteers(ctx context.Context, state *State, id, signedURL 
 			return err
 		}
 		item.DeliveredSteers = append(item.DeliveredSteers, steer.ID)
-		if err := r.store.Save(*state); err != nil {
+		if err := r.saveSteerState(*state); err != nil {
 			return err
 		}
 	}
 	item.CorrectionPending = false
 	item.PendingSteers = nil
-	return r.store.Save(*state)
+	return r.saveSteerState(*state)
 }

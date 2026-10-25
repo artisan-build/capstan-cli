@@ -120,7 +120,9 @@ Every claim and renew negotiates `item_shape: "repository-v1"`. Amp work must na
 explicit lowercase GitHub `repository`, such as `example/application`. Null or invalid repository
 values release the Amp claim with a redacted reason. Solo work does not require this field.
 The `workflow_ref` identifies the workflow repository; it may differ from the target code repository
-and never supplies an Amp project. Recovery refuses a repository change on held Amp work.
+and never supplies an Amp project. A repository change invalidates that Amp binding: the drain
+releases the affected item under its current fence and forgets it after success or a conflict response.
+If release fails, it retains that holding for retry. It never kills or archives the old thread.
 
 The configured executable must report Amp CLI `0.0.1792929650` or newer. Commands use direct argv,
 with no shell or automatic update. The drain gets the exact project with
@@ -166,9 +168,23 @@ Steer ids and pending-delivery state survive a crash; steer text stays out of re
 logs, and thread titles. Later renewals still poll but do not resend delivered steers. A crash between
 remote delivery and the local acknowledgment may retry the text. The delivery ledger holds at most
 256 delivered steer ids per claim and fails closed when full. Pending ids are saved before delivery.
-If a known pending steer is absent from the response, delivery remains pending and the tick fails closed.
+If a known pending steer is absent from the response, that item's delivery remains pending.
 An empty poll with no pending ids succeeds without sending anything. Polling steers does not report
 progress or reset the server's work deadline.
+
+Steer text is limited to 8,000 Unicode characters and at most 32,000 UTF-8 bytes. The signed response
+has its own 25,628,672-byte cap, sized for 256 entries with worst-case JSON-escaped Unicode and bounded
+metadata. Amp command output and stream events keep their separate 64 KiB cap. More than 256 returned
+entries fails that item closed; this client does not page server steers.
+
+A steer fetch, validation, or delivery failure skips that item for the tick and logs only its id and
+fence. Pending ids survive for retry; the drain still recovers siblings, sends the claim heartbeat,
+and handles their directives. It also skips directives for an item whose delivery or repository
+binding failed that tick. A local persistence failure can still stop the tick.
+
+Polling marks all returned steers read, including task-wide entries that the drain does not deliver.
+The orb can still read recent entries within the server's retention window. A known pending id that
+ages out requires operator attention; it is never silently acknowledged.
 
 The server's deadline `nudge` uses the same continuation command. Amp `send_enter` and
 `resend_pointer` repairs continue that exact thread with an MCP pointer. Only an authorized `respawn`

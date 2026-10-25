@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const maxAmpJSON = 64 << 10
@@ -20,7 +21,7 @@ const maxAmpJSON = 64 << 10
 var repositoryPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?/[a-z0-9._-]{1,100}$`)
 var ampProjectIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,254}$`)
 var ampThreadPattern = regexp.MustCompile(`^T-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-var ampVersionPattern = regexp.MustCompile(`^0\.0\.([1-9][0-9]{0,11})(?:-g[0-9a-f]+)?(?: \([^\r\n()]+\))?\n?$`)
+var ampVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,19})(?:-g[0-9a-f]+)?(?: \([^\r\n()]+\))?(?:\r?\n)?$`)
 
 func validRepository(value string) bool {
 	if len(value) > 140 || !repositoryPattern.MatchString(value) {
@@ -68,7 +69,11 @@ func ParseAmpSessionRef(value string) (AmpSessionRef, error) {
 }
 
 func strictAmpJSON(data []byte, target any) error {
-	if len(data) > maxAmpJSON || validateUniqueJSON(data) != nil {
+	return strictBoundedJSON(data, target, maxAmpJSON)
+}
+
+func strictBoundedJSON(data []byte, target any, limit int) error {
+	if len(data) > limit || validateUniqueJSON(data) != nil {
 		return errors.New("invalid Amp JSON")
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
@@ -81,11 +86,18 @@ func strictAmpJSON(data []byte, target any) error {
 
 func validateAmpVersion(data []byte) error {
 	match := ampVersionPattern.FindSubmatch(data)
-	if len(match) != 2 {
+	if len(data) > maxAmpJSON || len(match) != 4 {
 		return errors.New("amp version output is invalid")
 	}
-	v, err := strconv.ParseUint(string(match[1]), 10, 64)
-	if err != nil || v < 1792929650 {
+	var version [3]uint64
+	for i := range version {
+		v, err := strconv.ParseUint(string(match[i+1]), 10, 64)
+		if err != nil {
+			return errors.New("amp version output is invalid")
+		}
+		version[i] = v
+	}
+	if version[0] == 0 && version[1] == 0 && version[2] < 1792929650 {
 		return errors.New("amp CLI must be at least 0.0.1792929650")
 	}
 	return nil
@@ -277,7 +289,7 @@ func (l *AmpLauncher) Continue(ctx context.Context, value, text string) error {
 }
 
 func validSessionMessage(text string) bool {
-	return strings.TrimSpace(text) != "" && len(text) <= 8192 && !strings.ContainsRune(text, 0)
+	return len(text) <= maxSessionMessageBytes && utf8.ValidString(text) && utf8.RuneCountInString(text) <= maxSteerCharacters && strings.TrimSpace(text) != "" && !strings.ContainsRune(text, 0)
 }
 
 func (l *AmpLauncher) SendEnter(ctx context.Context, value, path, nonce, id string) error {

@@ -143,7 +143,8 @@ nonce while the signed pointer and `delivered` transition use the newly claimed 
 Amp claims require the task's explicit lowercase GitHub `repository` (`owner/repo`). A missing or
 invalid repository releases the claim without dispatch. The independent `workflow_ref` pins the
 method repository and is never used to select the orb's code repository. Claim and renew requests
-negotiate `item_shape: "repository-v1"`; a changed repository on held Amp work stops recovery.
+negotiate `item_shape: "repository-v1"`; a changed repository releases the affected Amp holding
+under its fence without stopping sibling recovery or killing the thread.
 
 The Amp lane checks the CLI version, resolves the project with `amp projects get/create`, then
 dispatches `amp -ox` with a short Capstan MCP `work_brief` pointer. It records the first stream event's
