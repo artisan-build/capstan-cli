@@ -70,7 +70,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	held := reportHeld(state)
 	response, err := r.api.Claim(ctx, ClaimRequest{
-		Capacity: leafCapacity, OrchestratorCapacity: orchestratorCapacity,
+		ItemShape: "repository-v1",
+		Capacity:  leafCapacity, OrchestratorCapacity: orchestratorCapacity,
 		Roles:         append(make([]string, 0, len(r.config.Roles)), r.config.Roles...),
 		Capabilities:  append(make([]string, 0, len(r.config.Capabilities)), r.config.Capabilities...),
 		RoleProviders: cloneStringMap(r.config.RoleProviders), CurrentClaimedItemCount: leafHeld, HeldItems: held,
@@ -78,11 +79,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if r.config.Launcher == "solo" && (len(response.Items) > 0 || len(response.Directives) > 0) &&
+	if (r.config.Launcher == "solo" || r.config.Launcher == "hybrid") && (len(response.Items) > 0 || len(response.Directives) > 0) &&
 		(response.SpokeID == nil || *response.SpokeID < 1) {
 		return errors.New("work claim response omitted the authoritative spoke id")
 	}
-	if r.config.Launcher == "solo" && response.SpokeID != nil {
+	if (r.config.Launcher == "solo" || r.config.Launcher == "hybrid") && response.SpokeID != nil {
 		for _, item := range state.Items {
 			if item.SpokeID != 0 && item.SpokeID != *response.SpokeID {
 				return errors.New("work claim response changed the authoritative spoke id")
@@ -147,7 +148,7 @@ func (r *Runner) recover(ctx context.Context, state *State) error {
 			}
 			switch result.Status {
 			case "lost":
-				if item.SessionRef != "" && item.Role != "orchestrator" {
+				if item.SessionRef != "" && item.Role != "orchestrator" && !isAmpSession(item.SessionRef) {
 					alive, aliveErr := r.launcher.Alive(ctx, item.SessionRef)
 					if aliveErr != nil {
 						return fmt.Errorf("local session health failed: item_id=%s", id)
@@ -168,11 +169,24 @@ func (r *Runner) recover(ctx context.Context, state *State) error {
 				if err := validateLinks(item.Role, result.Item.Links); err != nil {
 					return fmt.Errorf("work renew links are invalid: item_id=%s", id)
 				}
+				if r.ampRole(item.Role) || isAmpSession(item.SessionRef) {
+					if result.Item.Repository == nil || *result.Item.Repository != item.Repository || !validRepository(item.Repository) {
+						return errors.New("work renew changed the Amp repository")
+					}
+				}
 				if err := r.writeLinks(item, result.Item.Links); err != nil {
 					return err
 				}
 				if err := r.advanceFromServer(state, id, result.Item.State); err != nil {
 					return err
+				}
+				if item.Phase == "awaiting_verification" {
+					continue
+				}
+				if (item.Phase == "routed" && isAmpSession(item.SessionRef)) || item.CorrectionPending {
+					if err := r.deliverSteers(ctx, state, id, result.Item.Links["steers"]); err != nil {
+						return err
+					}
 				}
 				if item.SessionRef == "" && strings.HasPrefix(item.PendingLaunchKey, "initial:") {
 					if err := r.establish(ctx, state, id, item.PendingLaunchKey, ""); err != nil {
@@ -182,7 +196,10 @@ func (r *Runner) recover(ctx context.Context, state *State) error {
 				if item.SessionRef == "" {
 					continue
 				}
-				alive, aliveErr := r.launcher.Alive(ctx, item.SessionRef)
+				alive, aliveErr := true, error(nil)
+				if !isAmpSession(item.SessionRef) {
+					alive, aliveErr = r.launcher.Alive(ctx, item.SessionRef)
+				}
 				if aliveErr != nil {
 					return fmt.Errorf("local session health failed: item_id=%s", id)
 				}
@@ -211,6 +228,10 @@ func (r *Runner) startClaim(ctx context.Context, state *State, claim ClaimItem, 
 	if _, exists := state.Items[claim.ID]; exists {
 		return errors.New("claim response repeated a held item")
 	}
+	if r.ampRole(claim.Role) && (claim.Repository == nil || !validRepository(*claim.Repository)) {
+		r.log("Amp claim released: missing or invalid explicit repository; item_id=" + safeID(claim.ID))
+		return r.api.Transition(ctx, TransitionRequest{ItemID: claim.ID, Fence: claim.Fence, State: "released"})
+	}
 	workDir := filepath.Join(r.config.WorkDir, fmt.Sprintf("%s-f%d", claim.ID, claim.Fence))
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return errors.New("item work directory could not be created")
@@ -221,6 +242,9 @@ func (r *Runner) startClaim(ctx context.Context, state *State, claim ClaimItem, 
 	item := &ItemState{
 		TaskID: claim.TaskID, Role: claim.Role, Fence: claim.Fence, Phase: "claimed", WorkDir: workDir,
 		LaunchNonce: claim.LaunchNonce, SeatFence: claim.SeatFence, SpokeID: spokeID, PendingLaunchKey: "initial:" + claim.LaunchNonce,
+	}
+	if r.ampRole(claim.Role) {
+		item.Repository = *claim.Repository
 	}
 	state.Items[claim.ID] = item
 	if err := r.writeLinks(item, claim.Links); err != nil {
@@ -254,6 +278,14 @@ func (r *Runner) establish(ctx context.Context, state *State, id, launchKey, exi
 	}
 	sessionRef, err := r.launcher.Launch(ctx, spec)
 	if err != nil {
+		if errors.Is(err, errAmpDispatchUncertain) {
+			return errAmpDispatchUncertain
+		}
+		if r.ampRole(item.Role) {
+			if _, markerErr := os.Stat(filepath.Join(item.WorkDir, "amp-"+item.LaunchNonce+".started")); markerErr == nil {
+				return errAmpDispatchUncertain
+			}
+		}
 		return errors.New("launcher could not establish a session")
 	}
 	if sessionRef == "" || len(sessionRef) > 2048 {
@@ -303,6 +335,21 @@ func (r *Runner) ensureRouted(ctx context.Context, state *State, id string) erro
 
 func (r *Runner) advanceFromServer(state *State, id, serverPhase string) error {
 	item := state.Items[id]
+	if serverPhase == "awaiting_verification" {
+		if item.SessionRef == "" {
+			return errors.New("waiting item has no session")
+		}
+		item.Phase = serverPhase
+		return r.store.Save(*state)
+	}
+	if item.Phase == "awaiting_verification" && serverPhase == "routed" {
+		item.Phase = "routed"
+		item.CorrectionPending = true
+		return r.store.Save(*state)
+	}
+	if item.Phase == "awaiting_verification" {
+		return errors.New("work renew regressed a waiting item")
+	}
 	serverIndex := phaseIndex(serverPhase)
 	localIndex := phaseIndex(item.Phase)
 	if serverIndex < 0 {
@@ -333,6 +380,9 @@ func phaseIndex(phase string) int {
 }
 
 func (r *Runner) releaseAfterLaunchFailure(ctx context.Context, state *State, id string, cause error) error {
+	if errors.Is(cause, errAmpDispatchUncertain) {
+		return cause
+	}
 	item := state.Items[id]
 	if item != nil && item.SessionRef != "" {
 		_ = r.launcher.Terminate(ctx, item.SessionRef)
@@ -400,6 +450,10 @@ func (r *Runner) handleDirectives(ctx context.Context, state *State, directives 
 		if item.Directive != nil && item.Directive.ID == directive.ID && item.Directive.Status != "pending" {
 			continue
 		}
+		if r.ampRole(item.Role) && directive.Kind == "respawn" && directive.Payload.LaunchNonce == item.LaunchNonce &&
+			(item.Directive == nil || item.Directive.ID != directive.ID) {
+			return errors.New("amp respawn directive did not rotate the launch nonce")
+		}
 		item.Directive = &DirectiveState{ID: directive.ID, Kind: directive.Kind, Status: "pending"}
 		if err := r.store.Save(*state); err != nil {
 			return err
@@ -422,6 +476,14 @@ func (r *Runner) handleDirectives(ctx context.Context, state *State, directives 
 func (r *Runner) executeDirective(ctx context.Context, state *State, directive Directive) error {
 	item := state.Items[directive.ItemID]
 	switch directive.Kind {
+	case "nudge":
+		if !validSessionMessage(directive.Payload.Message) {
+			return errors.New("invalid nudge message")
+		}
+		if launcher, ok := r.launcher.(MessageLauncher); ok {
+			return launcher.Continue(ctx, item.SessionRef, directive.Payload.Message)
+		}
+		return ErrUnsupportedAction
 	case "send_enter":
 		return r.launcher.SendEnter(ctx, item.SessionRef, filepath.Join(item.WorkDir, linksFilename), item.LaunchNonce, directive.ID)
 	case "resend_pointer":
@@ -497,7 +559,13 @@ func (r *Runner) validateClaim(claim ClaimItem) error {
 	if !validUUID(claim.ID) || !validUUID(claim.TaskID) || !validUUIDv7(claim.LaunchNonce) || claim.Fence < 1 {
 		return errors.New("claim response contains invalid item identity")
 	}
-	if r.config.Launcher == "solo" {
+	if r.config.Launcher == "solo" || r.config.Launcher == "hybrid" {
+		if r.ampRole(claim.Role) {
+			if claim.SessionRef != "" {
+				return errors.New("claim response tried to reuse a leaf session")
+			}
+			return validateLinks(claim.Role, claim.Links)
+		}
 		if _, ok := r.config.SoloBindings[claim.Role]; !ok {
 			return errors.New("claim response contains an unsupported role")
 		}
@@ -547,7 +615,7 @@ func (r *Runner) writePrompt(id string, item *ItemState, existingSession string)
 func (r *Runner) launchSpec(id string, item *ItemState, key, existing string) (LaunchSpec, error) {
 	values := r.values(id, item, existing)
 	var command []string
-	if r.config.Launcher != "solo" {
+	if r.config.Launcher == "process" || r.config.Launcher == "" {
 		command = make([]string, len(r.config.RoleCommands[item.Role]))
 		for index, part := range r.config.RoleCommands[item.Role] {
 			rendered, err := render(part, values)
@@ -563,8 +631,23 @@ func (r *Runner) launchSpec(id string, item *ItemState, key, existing string) (L
 		LinksPath: filepath.Join(item.WorkDir, linksFilename), GatePath: filepath.Join(item.WorkDir, gateFilename),
 		LaunchKey: key, ExistingSessionRef: existing, Role: item.Role, SpokeID: item.SpokeID,
 		LaunchNonce: item.LaunchNonce, SoloBinding: r.config.SoloBindings[item.Role],
+		Repository: item.Repository, ItemID: id,
 	}, nil
 }
+
+func (r *Runner) ampRole(role string) bool {
+	if r.config.Launcher != "hybrid" || role == "orchestrator" {
+		return false
+	}
+	for _, configured := range r.config.AmpRoles {
+		if configured == role {
+			return true
+		}
+	}
+	return false
+}
+
+func isAmpSession(ref string) bool { return strings.HasPrefix(ref, "amp:v1:") }
 
 func (r *Runner) values(id string, item *ItemState, session string) map[string]string {
 	return map[string]string{

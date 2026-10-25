@@ -45,6 +45,7 @@ type HeldItem struct {
 
 // ClaimRequest is the complete split-capacity heartbeat sent every claim tick.
 type ClaimRequest struct {
+	ItemShape               string            `json:"item_shape"`
 	Capacity                int               `json:"capacity"`
 	OrchestratorCapacity    int               `json:"orchestrator_capacity"`
 	Roles                   []string          `json:"roles"`
@@ -56,6 +57,7 @@ type ClaimRequest struct {
 
 // ClaimItem is one server-fenced item returned by claim.
 type ClaimItem struct {
+	Repository  *string           `json:"repository,omitempty"`
 	ID          string            `json:"id"`
 	TaskID      string            `json:"task_id"`
 	Role        string            `json:"role"`
@@ -83,6 +85,7 @@ type Directive struct {
 // DirectivePayload is the bounded directive payload currently defined by the server.
 type DirectivePayload struct {
 	LaunchNonce string `json:"launch_nonce,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
 
 // ClaimResponse is one tick response.
@@ -100,6 +103,7 @@ type RenewRequestItem struct {
 
 // RenewedItem is the current server view returned with fresh signed links.
 type RenewedItem struct {
+	Repository *string           `json:"repository,omitempty"`
 	ID         string            `json:"id"`
 	TaskID     string            `json:"task_id"`
 	Role       string            `json:"role"`
@@ -157,6 +161,7 @@ func NewClient(config Config, bearer string) *Client {
 
 // Claim sends one explicit split-capacity tick.
 func (c *Client) Claim(ctx context.Context, request ClaimRequest) (ClaimResponse, error) {
+	request.ItemShape = "repository-v1"
 	if request.Roles == nil {
 		request.Roles = []string{}
 	}
@@ -189,8 +194,9 @@ func (c *Client) Renew(ctx context.Context, items []RenewRequestItem) ([]RenewRe
 		Results []RenewResult `json:"results"`
 	}
 	if err := c.post(ctx, "renew", struct {
-		Items []RenewRequestItem `json:"items"`
-	}{Items: items}, &response); err != nil {
+		ItemShape string             `json:"item_shape"`
+		Items     []RenewRequestItem `json:"items"`
+	}{ItemShape: "repository-v1", Items: items}, &response); err != nil {
 		return nil, err
 	}
 	if response.Results == nil {

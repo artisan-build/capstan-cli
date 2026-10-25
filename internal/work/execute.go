@@ -37,7 +37,7 @@ func Execute(ctx context.Context, configPath string, launcher Launcher, health H
 		return err
 	}
 	if launcher == nil {
-		if config.Launcher == "solo" {
+		if config.Launcher == "solo" || config.Launcher == "hybrid" {
 			var client *StdioSoloClient
 			client, err = NewStdioSoloClient(ctx, config.SoloMCPPath, config.SoloCallTimeout)
 			if err != nil {
@@ -45,6 +45,9 @@ func Execute(ctx context.Context, configPath string, launcher Launcher, health H
 			}
 			defer func() { returnErr = errors.Join(returnErr, client.Close()) }()
 			launcher = NewSoloLauncher(client, config.SoloReadyTimeout)
+			if config.Launcher == "hybrid" {
+				launcher = NewHybridLauncher(launcher, NewAmpLauncher(config.AmpPath, nil), config.AmpRoles)
+			}
 		} else {
 			launcher, err = NewProcessLauncher()
 			if err != nil {

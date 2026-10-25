@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -44,6 +45,8 @@ type SetupOptions struct {
 	ActorID              string
 	CredentialFile       string
 	SoloMCPPath          string
+	AmpPath              string
+	AmpRoles             []string
 	Bindings             map[string]SoloBinding
 	MaxConcurrent        int
 	OrchestratorCapacity int
@@ -216,6 +219,19 @@ func decodeTools(data []byte) ([]SoloAgentTool, error) {
 }
 
 func completeSetupOptions(options *SetupOptions, input io.Reader, output io.Writer, projects []SoloProject, tools []SoloAgentTool) error {
+	if len(options.AmpRoles) == 0 && options.AmpPath != "" {
+		return errors.New("--amp-path requires an explicit --amp-role")
+	}
+	if len(options.AmpRoles) > 0 && options.AmpPath == "" {
+		path, err := exec.LookPath("amp")
+		if err != nil {
+			return errors.New("amp executable was not found; supply --amp-path")
+		}
+		options.AmpPath, err = filepath.Abs(path)
+		if err != nil {
+			return errors.New("amp executable path could not be resolved")
+		}
+	}
 	if options.ConfigPath == "" {
 		path, err := DefaultConfigPath()
 		if err != nil {
@@ -379,6 +395,10 @@ func stageSetupConfig(options SetupOptions) (setupPlan, error) {
 		roles = append(roles, role)
 		providers[role] = binding.Harness
 	}
+	for _, role := range options.AmpRoles {
+		roles = append(roles, role)
+		providers[role] = "claude"
+	}
 	sort.Strings(roles)
 	raw := rawConfig{
 		Version: 2, Launcher: "solo", CapstanURL: options.CapstanURL, Team: options.Team, ActorID: options.ActorID,
@@ -387,6 +407,12 @@ func stageSetupConfig(options SetupOptions) (setupPlan, error) {
 		StateFile: filepath.Join("var", "work-state.json"), WorkDir: filepath.Join("var", "work-items"), LockFile: filepath.Join("var", "work.lock"),
 		PromptTemplate: "work-prompt.md", OrchestratorPromptTemplate: "orchestrator-prompt.md", SoloMCPPath: soloMCP,
 		SoloCallTimeoutSeconds: 30, SoloReadyTimeoutSeconds: 120, SoloBindings: options.Bindings, RequestTimeoutSeconds: 15,
+	}
+	if len(options.AmpRoles) > 0 {
+		raw.Version = 3
+		raw.Launcher = "hybrid"
+		raw.AmpPath = options.AmpPath
+		raw.AmpRoles = options.AmpRoles
 	}
 	data, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {

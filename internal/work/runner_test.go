@@ -127,6 +127,8 @@ type fakeAPI struct {
 	transitionFn func(TransitionRequest) error
 }
 
+func (f *fakeAPI) Steers(context.Context, string) ([]Steer, error) { return []Steer{}, nil }
+
 func (f *fakeAPI) Claim(_ context.Context, request ClaimRequest) (ClaimResponse, error) {
 	f.claims = append(f.claims, request)
 	if f.claimFn != nil {
@@ -202,7 +204,8 @@ func TestRunnerSendsExactTickAndLaunchTransitions(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 	wantClaim := ClaimRequest{
-		Capacity: 2, OrchestratorCapacity: 1, Roles: []string{"builder", "orchestrator"}, Capabilities: []string{"git"},
+		ItemShape: "repository-v1",
+		Capacity:  2, OrchestratorCapacity: 1, Roles: []string{"builder", "orchestrator"}, Capabilities: []string{"git"},
 		RoleProviders: map[string]string{"builder": "opencode", "orchestrator": "claude"}, CurrentClaimedItemCount: 0,
 		HeldItems: []HeldItem{},
 	}

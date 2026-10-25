@@ -34,6 +34,8 @@ var (
 type rawConfig struct {
 	Version                    int                    `json:"version"`
 	Launcher                   string                 `json:"launcher"`
+	AmpPath                    string                 `json:"amp_path,omitempty"`
+	AmpRoles                   []string               `json:"amp_roles,omitempty"`
 	CapstanURL                 string                 `json:"capstan_url"`
 	Team                       string                 `json:"team"`
 	ActorID                    string                 `json:"actor_id"`
@@ -106,8 +108,8 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func validateConfig(path string, raw rawConfig) (Config, error) {
-	if raw.Version != 1 && raw.Version != 2 {
-		return Config{}, errors.New("work config version must be 1 or 2")
+	if raw.Version != 1 && raw.Version != 2 && raw.Version != 3 {
+		return Config{}, errors.New("work config version must be 1, 2, or 3")
 	}
 	server, err := validateDrainURL(raw.CapstanURL)
 	if err != nil {
@@ -168,6 +170,28 @@ func validateConfig(path string, raw rawConfig) (Config, error) {
 	if raw.Version == 2 && launcher != "solo" {
 		return Config{}, errors.New("work config version 2 launcher must be solo")
 	}
+	ampRoles := make(map[string]bool)
+	if raw.Version != 3 && (raw.AmpPath != "" || raw.AmpRoles != nil) {
+		return Config{}, errors.New("amp fields require work config version 3")
+	}
+	if raw.Version == 3 {
+		if launcher != "hybrid" || !filepath.IsAbs(raw.AmpPath) || strings.ContainsRune(raw.AmpPath, 0) {
+			return Config{}, errors.New("work config version 3 requires hybrid and an absolute amp_path")
+		}
+		if err := validateScalars("amp_roles", raw.AmpRoles, true); err != nil {
+			return Config{}, err
+		}
+		for _, role := range raw.AmpRoles {
+			_, overlap := raw.SoloBindings[role]
+			if role == "orchestrator" || !providerPattern.MatchString(role) || raw.RoleProviders[role] != "claude" || overlap {
+				return Config{}, errors.New("amp leaf roles must be distinct, claude-provided, and have no Solo binding")
+			}
+			ampRoles[role] = true
+		}
+		if _, ok := raw.SoloBindings["orchestrator"]; !ok {
+			return Config{}, errors.New("hybrid requires a Solo orchestrator binding")
+		}
+	}
 	if launcher == "process" {
 		if len(raw.RoleCommands) != len(raw.Roles) {
 			return Config{}, errors.New("work config role_commands must exactly match roles")
@@ -188,9 +212,9 @@ func validateConfig(path string, raw rawConfig) (Config, error) {
 		}
 	} else {
 		if raw.RoleCommands != nil {
-			return Config{}, errors.New("work config version 2 cannot contain role_commands")
+			return Config{}, errors.New("work config Solo and hybrid launchers cannot contain role_commands")
 		}
-		if len(raw.SoloBindings) != len(raw.Roles) {
+		if len(raw.SoloBindings)+len(ampRoles) != len(raw.Roles) {
 			return Config{}, errors.New("work config solo_bindings must exactly match roles")
 		}
 		if raw.SoloCallTimeoutSeconds <= 0 || raw.SoloCallTimeoutSeconds > 120 ||
@@ -198,6 +222,9 @@ func validateConfig(path string, raw rawConfig) (Config, error) {
 			return Config{}, errors.New("work config Solo timeouts are outside the allowed range")
 		}
 		for _, role := range raw.Roles {
+			if ampRoles[role] {
+				continue
+			}
 			binding, ok := raw.SoloBindings[role]
 			if !providerPattern.MatchString(role) || !ok || binding.ProjectID < 1 || binding.AgentToolID < 1 || !supportedHarness(binding.Harness) || binding.ExtraArgs == nil || len(binding.ExtraArgs) > 64 {
 				return Config{}, fmt.Errorf("work config Solo binding for role %q is invalid", role)
@@ -253,7 +280,7 @@ func validateConfig(path string, raw rawConfig) (Config, error) {
 		return Config{}, err
 	}
 	soloMCP := ""
-	if launcher == "solo" {
+	if launcher == "solo" || launcher == "hybrid" {
 		if raw.SoloMCPPath == "" {
 			raw.SoloMCPPath = defaultSoloMCPPath(runtime.GOOS)
 		}
@@ -281,6 +308,7 @@ func validateConfig(path string, raw rawConfig) (Config, error) {
 		RoleProviders: cloneStringMap(raw.RoleProviders), StateFile: state, WorkDir: workDir, LockFile: lock,
 		PromptTemplate: prompt, OrchestratorPromptTemplate: orchestratorPrompt,
 		Launcher: launcher, RoleCommands: cloneCommands(raw.RoleCommands), SoloMCPPath: soloMCP,
+		AmpPath: raw.AmpPath, AmpRoles: append([]string(nil), raw.AmpRoles...),
 		SoloCallTimeout:  time.Duration(raw.SoloCallTimeoutSeconds * float64(time.Second)),
 		SoloReadyTimeout: time.Duration(raw.SoloReadyTimeoutSeconds * float64(time.Second)),
 		SoloBindings:     cloneSoloBindings(raw.SoloBindings), RequestTimeout: time.Duration(raw.RequestTimeoutSeconds * float64(time.Second)),
@@ -346,6 +374,9 @@ func expectJSONEOF(decoder *json.Decoder) error {
 	err := decoder.Decode(&extra)
 	if errors.Is(err, io.EOF) {
 		return nil
+	}
+	if err == nil {
+		return errors.New("unexpected trailing JSON value")
 	}
 
 	return err

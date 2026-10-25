@@ -55,6 +55,8 @@ func newWorkSetupCommand(run workSetupRun) *cobra.Command {
 	flags.StringVar(&options.ActorID, "actor-id", "", "Capstan actor id")
 	flags.StringVar(&options.CredentialFile, "credential-file", "", "Private bound Work credential file")
 	flags.StringVar(&options.SoloMCPPath, "solo-mcp", "", "Solo stdio MCP executable path")
+	flags.StringVar(&options.AmpPath, "amp-path", "", "Absolute Amp executable path (discovered when omitted)")
+	flags.StringSliceVar(&options.AmpRoles, "amp-role", nil, "Explicit Amp leaf role (repeatable)")
 	flags.StringSliceVar(&bindings, "binding", nil, "Role binding role=project_id:agent_tool_id:harness (repeatable)")
 	flags.IntVar(&options.MaxConcurrent, "max-concurrent", 2, "Leaf capacity")
 	flags.IntVar(&options.OrchestratorCapacity, "orchestrator-capacity", 1, "Orchestrator capacity")
@@ -111,5 +113,12 @@ func newWorkGateCommand() *cobra.Command {
 		RunE: func(_ *cobra.Command, args []string) error {
 			return workprotocol.RunGate(args)
 		},
+	}
+}
+
+func newWorkAmpStreamCommand() *cobra.Command {
+	return &cobra.Command{
+		Use: "__work-amp-stream", Hidden: true, DisableFlagParsing: true, Args: cobra.ArbitraryArgs,
+		RunE: func(_ *cobra.Command, args []string) error { return workprotocol.RunAmpStream(args) },
 	}
 }
