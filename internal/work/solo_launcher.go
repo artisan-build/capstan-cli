@@ -16,6 +16,7 @@ import (
 )
 
 const maxPointerBytes = 299
+const maxPointerTotalBytes = 900
 
 var (
 	claudeReadyMarker     = regexp.MustCompile(`(?m)^[ \t]*─{8,}[ \t]*\r?\n[ \t]*❯[ \t]*\r?\n[ \t]*─{8,}[ \t]*\r?\n[^\r\n]*⏵⏵[ \t]+bypass permissions on[ \t]+\(shift\+tab to cycle\)[^\r\n]*$`)
@@ -186,7 +187,7 @@ func (l *SoloLauncher) OpenGate(ctx context.Context, sessionRef, gatePath, deliv
 	if err != nil {
 		return err
 	}
-	if err := l.sendText(ctx, ref, pointer); err != nil {
+	if err := l.sendChunkedText(ctx, ref, pointer); err != nil {
 		return err
 	}
 	if err := l.sendBytes(ctx, ref, []int{13}); err != nil {
@@ -217,7 +218,7 @@ func (l *SoloLauncher) SendEnter(ctx context.Context, sessionRef, linksPath, del
 	if err != nil {
 		return err
 	}
-	if !strings.Contains(output, pointer) {
+	if !renderedContains(output, pointer) {
 		return errors.New("solo prompt does not contain the pending pointer")
 	}
 	return l.sendBytes(ctx, ref, []int{13})
@@ -238,7 +239,7 @@ func (l *SoloLauncher) ResendPointer(ctx context.Context, sessionRef, linksPath,
 	if err := l.sendBytes(ctx, ref, []int{27}); err != nil {
 		return err
 	}
-	if err := l.sendText(ctx, ref, pointer); err != nil {
+	if err := l.sendChunkedText(ctx, ref, pointer); err != nil {
 		return err
 	}
 	if err := l.sendBytes(ctx, ref, []int{13}); err != nil {
@@ -414,7 +415,15 @@ func (l *SoloLauncher) Continue(ctx context.Context, sessionRef, text string) er
 	if err != nil || !validSessionMessage(text) {
 		return errors.New("solo continuation inputs are invalid")
 	}
-	// Keep each PTY write beneath the proven pointer boundary; never clip long steers.
+	if err := l.sendChunkedText(ctx, ref, text); err != nil {
+		return err
+	}
+	return l.sendBytes(ctx, ref, []int{13})
+}
+
+// sendChunkedText preserves the full text within the proven per-write PTY boundary.
+// Callers send Enter separately after all chunks have succeeded.
+func (l *SoloLauncher) sendChunkedText(ctx context.Context, ref SoloSessionRef, text string) error {
 	var chunk strings.Builder
 	for _, r := range text {
 		if chunk.Len()+len(string(r)) > maxPointerBytes {
@@ -430,7 +439,7 @@ func (l *SoloLauncher) Continue(ctx context.Context, sessionRef, text string) er
 			return err
 		}
 	}
-	return l.sendBytes(ctx, ref, []int{13})
+	return nil
 }
 
 func pointerFromLinks(path, nonce string) (string, error) {
@@ -447,8 +456,8 @@ func pointerFromLinks(path, nonce string) (string, error) {
 		return "", errors.New("work pointer inputs are invalid")
 	}
 	pointer := fmt.Sprintf("Fetch and follow %s, nonce %s.", brief, nonce)
-	if len([]byte(pointer)) > maxPointerBytes {
-		return "", errors.New("work pointer exceeds the 299-byte limit")
+	if len([]byte(pointer)) > maxPointerTotalBytes {
+		return "", errors.New("work pointer exceeds the 900-byte limit")
 	}
 	return pointer, nil
 }

@@ -88,8 +88,9 @@ A Solo leaf or cold orchestrator launch follows this sequence:
 2. Wait for the harness prompt. If Solo shows the folder-trust screen, send Down and Enter as separate
    inputs, then wait for the prompt again.
 3. Record `delivered` and `routed` with Capstan.
-4. Type a pointer of at most 299 bytes naming the signed brief link and nonce. Send Enter separately.
-5. Read rendered output and require the pointer echo.
+4. Type a pointer of at most 900 bytes naming the exact signed brief link and nonce, using PTY
+   writes of at most 299 bytes each. Send Enter separately after all chunks succeed.
+5. Read rendered output and require the full pointer echo, allowing terminal wrapping.
 
 The full brief, bearer, and signed links never enter argv, process names, the global state file, or
 errors. Signed links stay in the item directory's private `links.json`. The session reference contains
@@ -208,3 +209,9 @@ local state dropped the completed claim, closes only that exact Solo process on 
 and removes its private temporary directory. This self-test exercises Solo even in hybrid mode;
 it makes no Amp request. The same launcher and session identity then support a later
 live AC10 run against Capstan; passing the loopback self-test is not reported as live AC10 evidence.
+
+## Pointer delivery decision
+
+| Date | Decision | Reason |
+| --- | --- | --- |
+| 2026-10-25 | Share Continue’s chunked writer for gate and resend pointers; cap each write at 299 bytes and the full pointer at 900 bytes. | Signed URLs vary by installation domain; preserve the full URL and nonce while staying below the observed roughly 1000-byte message clipping. Enter remains separate, and two rejected sends still close the exact process. |
