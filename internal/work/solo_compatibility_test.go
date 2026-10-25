@@ -15,7 +15,7 @@ import (
 )
 
 func observedOpenCodeFrame(suggestion string) string {
-	return "    ┃\n    ┃  Ask anything… \"" + suggestion + "\"\n    ┃\n    ┃  Build · Fixture Model Provider\n    ╹━━━━━━━━━━━━━━━━━━━━━━\n    <worktree> shift+tab agents  ctrl+p commands\n\n  ⊙ 1 MCP failed /mcps    2.0.26\n"
+	return "    ┃\n    ┃  Ask anything… \"" + suggestion + "\"\n    ┃\n    ┃  Build · Fixture Model Provider\n    ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n    <worktree> shift+tab agents  ctrl+p commands\n\n  ⊙ 1 MCP failed /mcps    2.0.26\n"
 }
 
 func TestSoloOpenCodeOldAndObservedCompleteFramesRejectPartialFrames(t *testing.T) {
@@ -31,7 +31,7 @@ func TestSoloOpenCodeOldAndObservedCompleteFramesRejectPartialFrames(t *testing.
 			"┃ Ask anything…", "┃ Ask anything… \"" + suggestion + "\"",
 			strings.Replace(frame, "shift+tab agents  ctrl+p commands", "", 1),
 			strings.Replace(frame, "2.0.26", "", 1),
-			strings.Replace(frame, "╹━━━━━━━━━━━━━━━━━━━━━━", "", 1),
+			strings.Replace(frame, "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀", "", 1),
 			strings.Replace(frame, "Build · Fixture Model Provider", "", 1),
 			strings.Replace(frame, "Ask anything… \""+suggestion+"\"", "Ask anything… \""+suggestion, 1),
 		} {
