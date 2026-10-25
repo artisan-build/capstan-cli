@@ -3,6 +3,7 @@ package work
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -65,7 +66,7 @@ func TestCorrectionHTTPBoundedStrictNoRedirectOrBearer(t *testing.T) {
 	if err != nil || len(steers) != 1 || steers[0].ItemID != testItemID {
 		t.Fatalf("steers: %#v %v", steers, err)
 	}
-	for _, bad := range []string{`{}`, `{"steers":null}`, `{"steers":[],"unknown":true}`, `{"steers":[],"steers":[]}`, `{"steers":[]} {}`, strings.Repeat(" ", maxAmpJSON+1)} {
+	for _, bad := range []string{`{}`, `{"steers":null}`, `{"steers":[],"unknown":true}`, `{"steers":[],"steers":[]}`, `{"steers":[]} {}`, strings.Repeat(" ", 256*(12*8000+4096)+4096) + `{"steers":[]}`} {
 		body = bad
 		_, err := client.Steers(context.Background(), server.URL+"/steers?signature=secret")
 		if err == nil {
@@ -82,7 +83,15 @@ func TestCorrectionHTTPBoundedStrictNoRedirectOrBearer(t *testing.T) {
 		t.Fatal("redirect accepted")
 	}
 	before := calls
-	if _, err := client.Steers(context.Background(), "https://other.example/steers?signature=secret"); err == nil || calls != before {
-		t.Fatal("foreign signed endpoint fetched")
+	foreignCalls := 0
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		foreignCalls++
+		_, _ = io.WriteString(w, `{"steers":[]}`)
+	}))
+	defer foreign.Close()
+	_, err = client.Steers(context.Background(), foreign.URL+"/steers?signature=secret")
+	var apiErr APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "invalid_steer_endpoint" || foreignCalls != 0 || calls != before {
+		t.Fatal("foreign endpoint was not refused by the same-origin guard")
 	}
 }

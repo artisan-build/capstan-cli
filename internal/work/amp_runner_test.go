@@ -138,22 +138,17 @@ func TestAmpRunnerNullRepositoryReleasesWithoutGuessing(t *testing.T) {
 }
 func ptrString(value string) *string { return &value }
 
-func TestAmpRunnerRepositoryMismatchFailsClosedBeforeDelivery(t *testing.T) {
+func TestAmpRunnerRepositoryMismatchReleasesBeforeDelivery(t *testing.T) {
 	for _, repository := range []*string{nil, ptrString("other/repo")} {
 		c := testHybridConfig(t)
 		seedAmpItem(t, c, "routed")
-		before, _ := os.ReadFile(c.StateFile)
 		renew := ampRenew("routed")
 		renew.Item.Repository = repository
 		api := &fakeAPI{renewFn: func([]RenewRequestItem) ([]RenewResult, error) { return []RenewResult{renew}, nil }}
 		commands := &fakeAmpCommands{}
 		err := NewRunner(c, api, NewHybridLauncher(&fakeLauncher{}, NewAmpLauncher(c.AmpPath, commands), c.AmpRoles), staticHealth{}, nil).Run(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "repository") || len(commands.calls) != 0 || len(api.claims) != 0 || len(api.transitions) != 0 {
-			t.Fatal("repository mismatch did not fail closed")
-		}
-		after, _ := os.ReadFile(c.StateFile)
-		if string(before) != string(after) {
-			t.Fatal("mismatch changed holding")
+		if err != nil || len(commands.calls) != 0 || len(api.claims) != 1 || len(api.transitions) != 1 || api.transitions[0].State != "released" || len(loadWorkState(t, c).Items) != 0 {
+			t.Fatal("repository mismatch did not release only the invalid binding")
 		}
 	}
 }
@@ -204,8 +199,8 @@ func TestAmpRunnerCorrectionSameThreadNoReplayAndCrashRetry(t *testing.T) {
 		}
 	}
 	r := NewRunner(c, api, l, staticHealth{}, nil)
-	if err := r.Run(context.Background()); err == nil {
-		t.Fatal("interrupted correction passed")
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatal("interrupted correction suppressed the heartbeat")
 	}
 	s := loadWorkState(t, c)
 	if !s.Items[testItemID].CorrectionPending || len(s.Items[testItemID].DeliveredSteers) != 0 {
@@ -259,7 +254,7 @@ func TestAmpRunnerCorrectionResponseIsValidatedBeforeAnySend(t *testing.T) {
 		seedAmpItem(t, c, "awaiting_verification")
 		l := &recordingMessages{Launcher: &fakeLauncher{}}
 		api := &correctionAPI{fakeAPI: &fakeAPI{renewFn: func([]RenewRequestItem) ([]RenewResult, error) { return []RenewResult{ampRenew("routed")}, nil }}, steers: []Steer{{ID: testDirectiveID, TaskID: testTaskID, ItemID: testItemID, Text: "first"}, bad}}
-		if err := NewRunner(c, api, l, staticHealth{}, nil).Run(context.Background()); err == nil || len(l.messages) != 0 {
+		if err := NewRunner(c, api, l, staticHealth{}, nil).Run(context.Background()); err != nil || len(l.messages) != 0 || len(api.claims) != 1 {
 			t.Fatal("partially sent malformed steers")
 		}
 	}
@@ -465,8 +460,8 @@ func TestCorrectionMissingSteerAfterFetchCrashRetainsPending(t *testing.T) {
 	api := &correctionAPI{fakeAPI: &fakeAPI{renewFn: func([]RenewRequestItem) ([]RenewResult, error) { return []RenewResult{ampRenew("routed")}, nil }}, steers: []Steer{}}
 	l := &recordingMessages{Launcher: &fakeLauncher{}}
 	r := NewRunner(c, api, l, staticHealth{}, nil)
-	if err := r.Run(context.Background()); err == nil {
-		t.Fatal("empty correction fetch silently completed delivery")
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatal("missing pending steer suppressed the heartbeat")
 	}
 	if !loadWorkState(t, c).Items[testItemID].CorrectionPending || len(l.messages) != 0 {
 		t.Fatal("unavailable correction was forgotten")

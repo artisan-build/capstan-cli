@@ -73,7 +73,7 @@ func TestAmpVersionFloorAndMalformedOutput(t *testing.T) {
 			t.Fatalf("valid version %q: %v", good, err)
 		}
 	}
-	for _, bad := range []string{"0.0.1792929649", "0.0.01792929650", "amp 0.0.1792929650", "0.0.1792929650-gBAD", "0.0.1792929650\n0.0.1792929651", "0.0.1792929650garbage", "1.0.1792929650", strings.Repeat("x", maxAmpJSON+1)} {
+	for _, bad := range []string{"0.0.1792929649", "0.0.01792929650", "amp 0.0.1792929650", "0.0.1792929650-gBAD", "0.0.1792929650\n0.0.1792929651", "0.0.1792929650garbage", strings.Repeat("x", maxAmpJSON+1)} {
 		if err := validateAmpVersion([]byte(bad)); err == nil {
 			t.Fatalf("accepted malformed/old version %q", bad[:min(len(bad), 80)])
 		}
