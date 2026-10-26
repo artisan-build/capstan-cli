@@ -100,7 +100,9 @@ every minute. Agents must re-read it immediately before every signed call and ne
 Do not re-fetch the brief to refresh links: brief reads settle receipt/stall evidence.
 Solo leaves use the relevant `milestone`, `steers`, and `evidence` links; orchestrators use
 `orchestration` and `orchestrate` for verdicts and child actions. This contract is included for
-existing Solo prompt templates as well as setup defaults. Amp delivery is unchanged.
+existing Solo prompt templates as well as setup defaults. When rendering Solo prompts, the two
+exact older shipped defaults are replaced by the carrier; custom template text is retained.
+Amp delivery is unchanged.
 
 Item directories stay `0700`; `prompt.md` and `links.json` stay `0600`. Under SO 21, these files are
 readable only by the same OS user running the agents; hostile same-user processes are out of scope.
@@ -119,7 +121,8 @@ Capstan chooses repair actions. The drain has no repair timer or local retry lad
 - `resend_pointer` sends Esc, types the current short pointer, sends Enter separately, and checks its
   echo.
 - `respawn` closes the exact old Solo process and starts the mapped tool with the nonce in the
-  directive.
+  directive. After saving the rotated nonce, the drain re-renders the Solo prompt before launching
+  or opening the gate. A render failure leaves the item unlaunched with a failed directive outcome.
 - `nudge` sends bounded text and a separate Enter to the exact identity-checked Solo process.
   Generic process launchers report this action as unsupported.
 

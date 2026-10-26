@@ -560,6 +560,11 @@ func (r *Runner) executeDirective(ctx context.Context, state *State, directive D
 		if err := r.store.Save(*state); err != nil {
 			return err
 		}
+		if (r.config.Launcher == "solo" || r.config.Launcher == "hybrid") && !r.ampRole(item.Role) {
+			if err := r.writePrompt(directive.ItemID, item, ""); err != nil {
+				return err
+			}
+		}
 		if err := r.establish(ctx, state, directive.ItemID, "directive:"+directive.ID, ""); err != nil {
 			return err
 		}
@@ -650,7 +655,14 @@ func (r *Runner) writePrompt(id string, item *ItemState, existingSession string)
 		if err != nil {
 			return err
 		}
-		if !strings.HasPrefix(prompt, carrier) {
+		// Replace only the exact shipped defaults; preserve all custom template text.
+		legacy := "Fetch the current signed brief with the launch nonce from the Solo pointer.\n"
+		if item.Role == "orchestrator" {
+			legacy = "Fetch the current signed orchestrator brief with the launch nonce from the Solo pointer.\n"
+		}
+		if string(template) == legacy {
+			prompt = carrier
+		} else if !strings.HasPrefix(prompt, carrier) {
 			prompt = carrier + "\n" + prompt
 		}
 	}
