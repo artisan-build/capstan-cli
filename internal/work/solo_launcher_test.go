@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -295,6 +296,82 @@ func TestSoloLauncherSelectsCompleteReadyMarkerByHarness(t *testing.T) {
 			t.Fatal("busy Claude process was treated as ready")
 		}
 	})
+}
+
+func TestSoloReadinessWidthSafeSignatures(t *testing.T) {
+	claudeFrame := "────────────────────────────────────────────────\n❯\n────────────────────────────────────────────────\n"
+	for _, signature := range []struct {
+		name    string
+		harness string
+		marker  *regexp.Regexp
+		frames  []string
+	}{
+		{
+			name: "claude", harness: "claude", marker: claudeReadyMarker,
+			frames: []string{
+				claudeFrame + "⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent",
+				// Observed footer from Solo processes 5196/5197, including the double space and ellipsis.
+				claudeFrame + "⏵⏵ bypass permissions on (shift+tab to  · …",
+				claudeFrame + "⏵⏵ bypass permissions on",
+			},
+		},
+		{
+			name: "codex", harness: "codex", marker: codexReadyMarker,
+			frames: []string{"› Ask Codex to do anything", "› Ask Codex to do…", "› Ask Codex"},
+		},
+		{
+			name: "opencode-v1", harness: "opencode", marker: openCodeReadyMarker,
+			frames: []string{"┃ Ask anything, / for commands, @ for context…", "┃ Ask anything, / for…", "┃ Ask anything,"},
+		},
+		{
+			name: "opencode-v2", harness: "opencode", marker: openCodeReadyV2Marker,
+			frames: []string{
+				observedOpenCodeFrame("Fix broken tests"),
+				"┃\n┃ Ask anything… \"Fix bro…\n┃\n┃ Build · Fixture…\n╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\nshift+tab agents ctrl+p…\n",
+				"┃\n┃ Ask anything…\n┃\n┃ Build\n╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
+			},
+		},
+	} {
+		t.Run(signature.name, func(t *testing.T) {
+			for i, frame := range signature.frames {
+				for _, crlf := range []bool{false, true} {
+					output := frame
+					if crlf {
+						output = strings.ReplaceAll(output, "\n", "\r\n") + "\r\n"
+					}
+					if !signature.marker.MatchString(output) {
+						t.Errorf("frame %d (CRLF %v) did not match its signature", i, crlf)
+						continue
+					}
+					status := soloProcessStatus{ID: 77, Name: "capstan-builder-" + testNonce, Kind: "agent", Status: "Running"}
+					status.AgentState.Idle = true
+					fake := &fakeSoloCall{outputs: []string{output}, status: status}
+					launcher := NewSoloLauncher(fake, 20*time.Millisecond)
+					launcher.pollInterval = time.Millisecond
+					ref := SoloSessionRef{SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: signature.harness}
+					if err := launcher.waitReady(context.Background(), ref, false); err != nil {
+						t.Fatalf("frame %d (CRLF %v): %v", i, crlf, err)
+					}
+				}
+			}
+		})
+	}
+
+	for _, footer := range []string{
+		"⏵⏵ (shift+tab to cycle)", "⏵⏵ bypass permissions…", "⏵⏵ bypass permissions only",
+		"⏵⏵ bypass permissions oncall", "bypass permissions on", "",
+	} {
+		if readyForHarness("claude", claudeFrame+footer) {
+			t.Errorf("Claude accepted missing or inexact safety token: %q", footer)
+		}
+	}
+	for harness, fragment := range map[string]string{
+		"codex": "› Ask Code", "opencode": "┃ Ask anything",
+	} {
+		if readyForHarness(harness, fragment) {
+			t.Errorf("%s accepted an ambiguous prefix", harness)
+		}
+	}
 }
 
 func TestSoloLauncherFencesEveryReadAndInputAfterProcessIDRecycle(t *testing.T) {

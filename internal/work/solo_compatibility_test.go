@@ -29,11 +29,9 @@ func TestSoloOpenCodeOldAndObservedCompleteFramesRejectPartialFrames(t *testing.
 		}
 		for _, partial := range []string{
 			"┃ Ask anything…", "┃ Ask anything… \"" + suggestion + "\"",
-			strings.Replace(frame, "shift+tab agents  ctrl+p commands", "", 1),
-			strings.Replace(frame, "2.0.26", "", 1),
 			strings.Replace(frame, "╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀", "", 1),
 			strings.Replace(frame, "Build · Fixture Model Provider", "", 1),
-			strings.Replace(frame, "Ask anything… \""+suggestion+"\"", "Ask anything… \""+suggestion, 1),
+			strings.Replace(frame, "Ask anything…", "Ask", 1),
 		} {
 			if readyForHarness("opencode", partial) {
 				t.Fatalf("partial frame accepted: %q", partial)

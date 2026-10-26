@@ -32,8 +32,8 @@ func TestReviewR1FutureVersionsAndLegalUnicodeMessages(t *testing.T) {
 		if !readyForHarness("opencode", frame) {
 			t.Errorf("complete frame version %s rejected", version)
 		}
-		if readyForHarness("opencode", strings.Replace(frame, version, "", 1)) {
-			t.Error("missing-version frame accepted")
+		if !readyForHarness("opencode", strings.Replace(frame, version, "", 1)) {
+			t.Error("width-clipped version hid a ready frame")
 		}
 	}
 	for _, text := range []string{strings.Repeat("—", 4000), strings.Repeat("界", 8000), strings.Repeat("😀", 8000)} {
