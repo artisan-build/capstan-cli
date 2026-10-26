@@ -445,19 +445,10 @@ func (l *SoloLauncher) sendChunkedText(ctx context.Context, ref SoloSessionRef, 
 }
 
 func pointerFromLinks(path, nonce string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) > 64<<10 || validateUniqueJSON(data) != nil {
-		return "", errors.New("private signed-link file could not be read")
-	}
-	var links map[string]string
-	if json.Unmarshal(data, &links) != nil {
-		return "", errors.New("private signed-link file is invalid")
-	}
-	brief := links["brief"]
-	if brief == "" || !validUUIDv7(nonce) {
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, "\r\n") || !validUUIDv7(nonce) {
 		return "", errors.New("work pointer inputs are invalid")
 	}
-	pointer := fmt.Sprintf("Fetch and follow %s, nonce %s.", brief, nonce)
+	pointer := fmt.Sprintf("Read and follow %s, nonce %s.", filepath.Join(filepath.Dir(path), promptFilename), nonce)
 	if len([]byte(pointer)) > maxPointerTotalBytes {
 		return "", errors.New("work pointer exceeds the 900-byte limit")
 	}

@@ -124,8 +124,8 @@ func TestSoloLauncherTrustReadyPointerAndCanonicalIdentity(t *testing.T) {
 		t.Fatalf("trust sequence = %#v", sends[:2])
 	}
 	pointer, _ := sends[2]["input"].(string)
-	if len(pointer) > maxPointerBytes || !strings.HasPrefix(pointer, "Fetch and follow ") || !strings.Contains(pointer, "/brief?signature=brief") || !strings.Contains(pointer, testNonce) {
-		t.Fatalf("pointer = %q", pointer)
+	if pointer != "Read and follow "+filepath.Join(root, promptFilename)+", nonce "+testNonce+"." || strings.Contains(pointer, "https://") || strings.Contains(pointer, "signature") {
+		t.Fatal("pointer did not preserve the local prompt path and nonce")
 	}
 	if !reflect.DeepEqual(sends[3]["bytes"], []int{13}) {
 		t.Fatalf("Enter was not separate: %#v", sends[3])
@@ -141,6 +141,11 @@ func TestSoloLauncherTrustReadyPointerAndCanonicalIdentity(t *testing.T) {
 	marker := filepath.Join(root, gateFilename) + "." + testNonce
 	if data, err := os.ReadFile(marker); err != nil || string(data) != ref+"\n" {
 		t.Fatalf("delivery marker = %q, %v", data, err)
+	}
+	assertMode(t, marker, 0o600)
+	calls := len(fake.calls)
+	if err := launcher.OpenGate(context.Background(), ref, filepath.Join(root, gateFilename), testNonce); err != nil || len(fake.calls) != calls {
+		t.Fatal("delivery marker did not prevent duplicate delivery")
 	}
 }
 
@@ -228,11 +233,11 @@ func TestSoloLauncherColdSpawnsOnlyWhenMatchingReusableProcessIsGone(t *testing.
 }
 
 func TestSoloLauncherEchoAcceptsRenderedSoftWrapOnly(t *testing.T) {
-	pointer := "Fetch and follow https://server.example/brief?signature=brief, nonce " + testNonce + "."
+	pointer := "Read and follow /private/work/item/prompt.md, nonce " + testNonce + "."
 	if !renderedContains(strings.Replace(pointer, ", nonce", ",\n  nonce", 1), pointer) {
 		t.Fatal("rendered soft wrap hid the complete pointer")
 	}
-	if !renderedContains(strings.Replace(pointer, "signature", "sig\n  nature", 1), pointer) {
+	if !renderedContains(strings.Replace(pointer, "prompt.md", "pro\n  mpt.md", 1), pointer) {
 		t.Fatal("rendered in-token soft wrap hid the complete pointer")
 	}
 	if renderedContains(strings.Replace(pointer, ", nonce", ", unrelated nonce", 1), pointer) {
@@ -468,11 +473,7 @@ func TestSoloLauncherUnhealthyPTYClosesExactProcess(t *testing.T) {
 }
 
 func TestPointerRejectsOversizeWithoutLeakingIt(t *testing.T) {
-	links := testLinks("https://server.example/" + strings.Repeat("x", 900))
-	path := filepath.Join(t.TempDir(), linksFilename)
-	if err := atomicPrivateWrite(path, mustJSON(t, links)); err != nil {
-		t.Fatal(err)
-	}
+	path := filepath.Join("/private", strings.Repeat("x", 900), linksFilename)
 	_, err := pointerFromLinks(path, testNonce)
 	if err == nil || strings.Contains(err.Error(), "server.example") || strings.Contains(err.Error(), "signature") {
 		t.Fatalf("error = %v", err)
@@ -488,33 +489,40 @@ func mustJSON(t *testing.T, value any) []byte {
 	return data
 }
 
-// Synthetic signed URLs keep production credentials out of the regression fixture.
-func pointerTestURL(size int) string {
-	base := "https://" + strings.Repeat("long-installation.", 10) + "example/"
-	suffix := "/brief?expires=1793000000&signature=" + strings.Repeat("a", 64)
-	if size == 239 {
-		base = "https://server.example/"
+func pointerTestRoot(t *testing.T, total int) string {
+	t.Helper()
+	root := t.TempDir()
+	want := total - len("Read and follow /prompt.md, nonce "+testNonce+".")
+	for len(root) < want {
+		remaining := want - len(root)
+		part := min(100, remaining-1)
+		if remaining-part-1 == 1 {
+			part--
+		}
+		root = filepath.Join(root, strings.Repeat("p", part))
 	}
-	return base + strings.Repeat("p", size-len(base)-len(suffix)) + suffix
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func TestSoloPointerChunkedDelivery(t *testing.T) {
-	for _, size := range []int{239, 600, 838} {
+	for _, size := range []int{299, 600, 900} {
 		for _, action := range []string{"gate", "resend", "send_enter"} {
 			t.Run(fmt.Sprintf("%d/%s", size, action), func(t *testing.T) {
-				brief := pointerTestURL(size)
-				want := "Fetch and follow " + brief + ", nonce " + testNonce + "."
-				if len(brief) != size || len(want) != size+62 {
+				root := pointerTestRoot(t, size)
+				want := "Read and follow " + filepath.Join(root, promptFilename) + ", nonce " + testNonce + "."
+				if len(want) != size {
 					t.Fatal("fixture length changed")
 				}
-				root := t.TempDir()
 				path := filepath.Join(root, linksFilename)
-				if err := atomicPrivateWrite(path, mustJSON(t, map[string]string{"brief": brief})); err != nil {
+				if err := atomicPrivateWrite(path, mustJSON(t, testLinks("https://server.example"))); err != nil {
 					t.Fatal(err)
 				}
 				pointer, err := pointerFromLinks(path, testNonce)
 				if err != nil || pointer != want {
-					t.Fatalf("pointer did not preserve exact URL and nonce: %v", err)
+					t.Fatalf("pointer did not preserve exact local path and nonce: %v", err)
 				}
 				ref, _ := (SoloSessionRef{SpokeID: 42, SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "codex", AgentToolID: 9}).String()
 				var wrapped strings.Builder
@@ -525,7 +533,7 @@ func TestSoloPointerChunkedDelivery(t *testing.T) {
 				fake := &fakeSoloCall{status: soloProcessStatus{ID: 77, Name: "capstan-builder-" + testNonce, Kind: "agent", Status: "Running"}, outputs: []string{wrapped.String()}}
 				if action != "send_enter" {
 					// A partial chunk echo must not complete delivery; wait for the full wrapped echo.
-					fake.outputs = append([]string{want[:299]}, fake.outputs...)
+					fake.outputs = append([]string{want[:min(299, len(want)-1)]}, fake.outputs...)
 				}
 				launcher := NewSoloLauncher(fake, time.Second)
 				launcher.pollInterval = time.Millisecond
@@ -574,10 +582,10 @@ func TestSoloPointerChunkedDelivery(t *testing.T) {
 }
 
 func TestSoloPointerTotalBoundAndRejectedSends(t *testing.T) {
-	for _, size := range []int{600, 839} {
+	for _, size := range []int{600, 901} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
-			root := t.TempDir()
-			if err := atomicPrivateWrite(filepath.Join(root, linksFilename), mustJSON(t, map[string]string{"brief": pointerTestURL(size)})); err != nil {
+			root := pointerTestRoot(t, size)
+			if err := atomicPrivateWrite(filepath.Join(root, linksFilename), mustJSON(t, testLinks("https://server.example"))); err != nil {
 				t.Fatal(err)
 			}
 			ref, _ := (SoloSessionRef{SpokeID: 42, SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "codex", AgentToolID: 9}).String()
@@ -586,7 +594,7 @@ func TestSoloPointerTotalBoundAndRejectedSends(t *testing.T) {
 			if err == nil {
 				t.Fatal("invalid delivery succeeded")
 			}
-			if size == 839 {
+			if size == 901 {
 				if err.Error() != "work pointer exceeds the 900-byte limit" || len(fake.calls) != 0 {
 					t.Fatalf("over-total-bound pointer reached Solo or leaked inputs: %v", err)
 				}
@@ -610,6 +618,47 @@ func TestSoloPointerTotalBoundAndRejectedSends(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(root, gateFilename) + "." + testNonce); !os.IsNotExist(err) {
 				t.Fatal("failed delivery wrote a marker")
+			}
+		})
+	}
+}
+
+func TestSoloPointerRequiresFullEcho(t *testing.T) {
+	for _, action := range []string{"gate", "resend", "send_enter"} {
+		t.Run(action, func(t *testing.T) {
+			root := t.TempDir()
+			links := filepath.Join(root, linksFilename)
+			pointer, err := pointerFromLinks(links, testNonce)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref, _ := (SoloSessionRef{SpokeID: 42, SoloProjectID: 8, SoloProcessID: 77, LaunchNonce: testNonce, Harness: "codex", AgentToolID: 9}).String()
+			partial := pointer[:len(pointer)-1]
+			fake := &fakeSoloCall{status: soloProcessStatus{ID: 77, Name: "capstan-builder-" + testNonce, Kind: "agent", Status: "Running"}, outputs: []string{partial}, lastInput: partial}
+			launcher := NewSoloLauncher(fake, 5*time.Millisecond)
+			launcher.pollInterval = time.Millisecond
+			// Keep returning a clipped echo even after the complete text was sent.
+			fake.outputs = []string{partial, partial, partial, partial, partial, partial, partial, partial, partial, partial}
+			switch action {
+			case "gate":
+				err = launcher.OpenGate(context.Background(), ref, filepath.Join(root, gateFilename), testNonce)
+			case "resend":
+				err = launcher.ResendPointer(context.Background(), ref, links, testNonce, testDirectiveID)
+			case "send_enter":
+				err = launcher.SendEnter(context.Background(), ref, links, testNonce, testDirectiveID)
+			}
+			if err == nil {
+				t.Fatal("clipped pointer echo completed delivery")
+			}
+			if _, err := os.Stat(filepath.Join(root, gateFilename) + "." + testNonce); !os.IsNotExist(err) {
+				t.Fatal("clipped echo wrote a delivery marker")
+			}
+			if action == "send_enter" {
+				for _, call := range fake.calls {
+					if call.name == "send_input" {
+						t.Fatal("send_enter submitted a clipped pointer")
+					}
+				}
 			}
 		})
 	}
