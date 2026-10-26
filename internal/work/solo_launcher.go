@@ -19,10 +19,12 @@ const maxPointerBytes = 299
 const maxPointerTotalBytes = 900
 
 var (
-	claudeReadyMarker     = regexp.MustCompile(`(?m)^[ \t]*─{8,}[ \t]*\r?\n[ \t]*❯[ \t]*\r?\n[ \t]*─{8,}[ \t]*\r?\n[^\r\n]*⏵⏵[ \t]+bypass permissions on[ \t]+\(shift\+tab to cycle\)[^\r\n]*$`)
-	codexReadyMarker      = regexp.MustCompile(`(?m)^[ \t]*›[ \t]+Ask Codex to do anything[ \t]*$`)
-	openCodeReadyMarker   = regexp.MustCompile(`(?m)^[ \t]*┃[ \t]+Ask anything, / for commands, @ for context…[ \t]*$`)
-	openCodeReadyV2Marker = regexp.MustCompile(`(?m)^[ \t]*┃[ \t]*\r?\n[ \t]*┃[ \t]+Ask anything… "[^"\r\n]+"[ \t]*\r?\n[ \t]*┃[ \t]*\r?\n[ \t]*┃[ \t]+[^\r\n]+ · [^\r\n]+\r?\n[ \t]*╹[▀─━]+[ \t]*\r?\n[^\r\n]*shift\+tab agents[ \t]+ctrl\+p commands[ \t]*\r?\n(?:[^\r\n]*\r?\n)*[^\r\n]*\b[0-9]+\.[0-9]+\.[0-9]+[ \t]*$`)
+	// Match identifying prefixes, not hints or metadata that terminal width can clip.
+	// Claude's permission token is mandatory even when the rest of its footer is absent.
+	claudeReadyMarker     = regexp.MustCompile(`(?m)^[ \t]*─{8,}[ \t]*\r?\n[ \t]*❯[ \t]*\r?\n[ \t]*─{8,}[ \t]*\r?\n[^\r\n]*⏵⏵[ \t]+bypass permissions on(?:[ \t][^\r\n]*)?\r?$`)
+	codexReadyMarker      = regexp.MustCompile(`(?m)^[ \t]*›[ \t]+Ask Codex\b[^\r\n]*\r?$`)
+	openCodeReadyMarker   = regexp.MustCompile(`(?m)^[ \t]*┃[ \t]+Ask anything,[^\r\n]*\r?$`)
+	openCodeReadyV2Marker = regexp.MustCompile(`(?m)^[ \t]*┃[ \t]*\r?\n[ \t]*┃[ \t]+Ask anything…[^\r\n]*\r?\n[ \t]*┃[ \t]*\r?\n[ \t]*┃[ \t]+[^\r\n \t][^\r\n]*\r?\n[ \t]*╹[▀─━]+[ \t]*\r?$`)
 )
 
 // SoloSessionRef is the canonical, non-secret identity handed to Capstan.
