@@ -667,7 +667,8 @@ func soloPromptTemplate(role string) string {
 		"The drain renews links.json every minute. Re-read {links_file} immediately before every signed call; never cache a URL.\n" +
 		"Do not re-fetch the brief as a link-refresh mechanism: brief reads settle receipt/stall evidence.\n"
 	if role == "orchestrator" {
-		return prompt + "Use the orchestration and orchestrate links for verdicts and child actions.\n"
+		return prompt + "Use the orchestration and orchestrate links for verdicts and child actions.\n" +
+			"The turn window is fixed at claim; finish each turn, and you will be woken again.\n"
 	}
 	return prompt + "Use the relevant milestone, steers, and evidence links for leaf work.\n"
 }

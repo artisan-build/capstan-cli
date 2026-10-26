@@ -26,7 +26,9 @@ func assertSoloCarrier(t *testing.T, prompt, links, role string) {
 	}
 	actions := []string{"milestone", "steers", "evidence"}
 	if role == "orchestrator" {
-		actions = []string{"orchestration", "orchestrate", "verdicts and child actions"}
+		actions = []string{"orchestration", "orchestrate", "verdicts and child actions", "The turn window is fixed at claim; finish each turn, and you will be woken again."}
+	} else if strings.Contains(prompt, "turn window") || strings.Contains(prompt, "woken again") {
+		t.Error("orchestrator turn instructions appeared in a leaf prompt")
 	}
 	for _, action := range actions {
 		if !strings.Contains(prompt, action) {
