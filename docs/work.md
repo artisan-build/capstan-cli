@@ -88,18 +88,31 @@ A Solo leaf or cold orchestrator launch follows this sequence:
 2. Wait for the harness prompt. If Solo shows the folder-trust screen, send Down and Enter as separate
    inputs, then wait for the prompt again.
 3. Record `delivered` and `routed` with Capstan.
-4. Type a pointer of at most 900 bytes naming the exact signed brief link and nonce, using PTY
+4. Type `Read and follow <absolute item directory>/prompt.md, nonce <uuid>.`, at most 900 bytes, using PTY
    writes of at most 299 bytes each. Send Enter separately after all chunks succeed.
 5. Read rendered output and require the full pointer echo, allowing terminal wrapping.
 
 The full brief, bearer, and signed links never enter argv, process names, the global state file, or
-errors. Signed links stay in the item directory's private `links.json`. The session reference contains
+errors or pointer text. The rendered `prompt.md` tells the agent to read the `brief` key from the
+item directory's absolute `links.json` path and fetch that signed brief first with the delivery nonce.
+Every other signed action URL is in the same file, keyed by action. The drain renews `links.json`
+every minute. Agents must re-read it immediately before every signed call and never cache a URL.
+Do not re-fetch the brief to refresh links: brief reads settle receipt/stall evidence.
+Solo leaves use the relevant `milestone`, `steers`, and `evidence` links; orchestrators use
+`orchestration` and `orchestrate` for verdicts and child actions. This contract is included for
+existing Solo prompt templates as well as setup defaults. When rendering Solo prompts, the two
+exact older shipped defaults are replaced by the carrier; custom template text is retained.
+Amp delivery is unchanged.
+
+Item directories stay `0700`; `prompt.md` and `links.json` stay `0600`. Under SO 21, these files are
+readable only by the same OS user running the agents; hostile same-user processes are out of scope.
+The session reference contains
 only `{spoke_id, solo_project_id, solo_process_id, launch_nonce, harness, agent_tool_id}`.
 
 An orchestrator session is reusable only when the server returns its receipt-bound reference, Solo
 reports the exact referenced process alive, and Solo reports it idle. The reference keeps the nonce
 that named the process when it was spawned. A warm wake uses the current item's separate nonce in
-the signed pointer and `delivered` transition. Idle does not mean finished. Leaf work never reuses a
+the local-prompt pointer and `delivered` transition. Idle does not mean finished. Leaf work never reuses a
 seat.
 
 Capstan chooses repair actions. The drain has no repair timer or local retry ladder:
@@ -108,7 +121,8 @@ Capstan chooses repair actions. The drain has no repair timer or local retry lad
 - `resend_pointer` sends Esc, types the current short pointer, sends Enter separately, and checks its
   echo.
 - `respawn` closes the exact old Solo process and starts the mapped tool with the nonce in the
-  directive.
+  directive. After saving the rotated nonce, the drain re-renders the Solo prompt before launching
+  or opening the gate. A render failure leaves the item unlaunched with a failed directive outcome.
 - `nudge` sends bounded text and a separate Enter to the exact identity-checked Solo process.
   Generic process launchers report this action as unsupported.
 
@@ -215,3 +229,4 @@ live AC10 run against Capstan; passing the loopback self-test is not reported as
 | Date | Decision | Reason |
 | --- | --- | --- |
 | 2026-10-25 | Share Continue’s chunked writer for gate and resend pointers; cap each write at 299 bytes and the full pointer at 900 bytes. | Signed URLs vary by installation domain; preserve the full URL and nonce while staying below the observed roughly 1000-byte message clipping. Enter remains separate, and two rejected sends still close the exact process. |
+| 2026-10-26 | Point Solo agents at the private local prompt and nonce; keep the same chunking, total bound, separate Enter, and full echo check. | Both role prompts name the renewing action-keyed links file. Re-read before every signed call; brief reads must not be used to refresh links. SO 21 keeps hostile same-user processes out of scope. |

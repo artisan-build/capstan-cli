@@ -560,6 +560,11 @@ func (r *Runner) executeDirective(ctx context.Context, state *State, directive D
 		if err := r.store.Save(*state); err != nil {
 			return err
 		}
+		if (r.config.Launcher == "solo" || r.config.Launcher == "hybrid") && !r.ampRole(item.Role) {
+			if err := r.writePrompt(directive.ItemID, item, ""); err != nil {
+				return err
+			}
+		}
 		if err := r.establish(ctx, state, directive.ItemID, "directive:"+directive.ID, ""); err != nil {
 			return err
 		}
@@ -643,11 +648,41 @@ func (r *Runner) writePrompt(id string, item *ItemState, existingSession string)
 	if err != nil {
 		return err
 	}
+	// Supply the carrier contract even for templates saved by older CLI versions.
+	// Amp and legacy process prompts keep their existing behavior.
+	if (r.config.Launcher == "solo" || r.config.Launcher == "hybrid") && !r.ampRole(item.Role) {
+		carrier, err := render(soloPromptTemplate(item.Role), values)
+		if err != nil {
+			return err
+		}
+		// Replace only the exact shipped defaults; preserve all custom template text.
+		legacy := "Fetch the current signed brief with the launch nonce from the Solo pointer.\n"
+		if item.Role == "orchestrator" {
+			legacy = "Fetch the current signed orchestrator brief with the launch nonce from the Solo pointer.\n"
+		}
+		if string(template) == legacy {
+			prompt = carrier
+		} else if !strings.HasPrefix(prompt, carrier) {
+			prompt = carrier + "\n" + prompt
+		}
+	}
 	if err := writePrivate(filepath.Join(item.WorkDir, promptFilename), prompt); err != nil {
 		return errors.New("private prompt file could not be written")
 	}
 
 	return nil
+}
+
+func soloPromptTemplate(role string) string {
+	prompt := "First read the brief URL from the brief key in {links_file} and fetch that signed brief with delivery nonce {launch_nonce}. Follow the brief.\n" +
+		"Every other signed action URL is in the same item-local file {links_file}, keyed by action.\n" +
+		"The drain renews links.json every minute. Re-read {links_file} immediately before every signed call; never cache a URL.\n" +
+		"Do not re-fetch the brief as a link-refresh mechanism: brief reads settle receipt/stall evidence.\n"
+	if role == "orchestrator" {
+		return prompt + "Use the orchestration and orchestrate links for verdicts and child actions.\n" +
+			"The turn window is fixed at claim; finish each turn, and you will be woken again.\n"
+	}
+	return prompt + "Use the relevant milestone, steers, and evidence links for leaf work.\n"
 }
 
 func (r *Runner) launchSpec(id string, item *ItemState, key, existing string) (LaunchSpec, error) {

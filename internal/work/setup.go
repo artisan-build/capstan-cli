@@ -424,8 +424,8 @@ func stageSetupConfig(options SetupOptions) (setupPlan, error) {
 		return setupPlan{}, errors.New("work setup staging directory could not be created")
 	}
 	cleanup := func() { _ = os.RemoveAll(root) }
-	promptData := []byte("Fetch the current signed brief with the launch nonce from the Solo pointer.\n")
-	orchestratorData := []byte("Fetch the current signed orchestrator brief with the launch nonce from the Solo pointer.\n")
+	promptData := []byte(soloPromptTemplate("builder"))
+	orchestratorData := []byte(soloPromptTemplate("orchestrator"))
 	if err := atomicPrivateWrite(filepath.Join(root, "work-prompt.md"), promptData); err != nil {
 		cleanup()
 		return setupPlan{}, errors.New("staged work prompt could not be written")

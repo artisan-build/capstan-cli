@@ -697,8 +697,9 @@ func TestRunnerSoloRoutingIdentityReuseAndColdReplacement(t *testing.T) {
 			t.Fatalf("delivered nonce = %q", api.transitions[0].LaunchNonce)
 		}
 		pointer := firstSoloCall(t, solo.calls, "send_input").arguments["input"]
-		if text, ok := pointer.(string); !ok || !strings.Contains(text, testRespawnNonce) || strings.Contains(text, testNonce) {
-			t.Fatalf("warm-wake pointer = %#v", pointer)
+		wantPointer := "Read and follow " + filepath.Join(config.WorkDir, testItemID+"-f1", promptFilename) + ", nonce " + testRespawnNonce + "."
+		if text, ok := pointer.(string); !ok || text != wantPointer {
+			t.Fatal("warm wake did not carry the exact local prompt path and current delivery nonce")
 		}
 		decoded, err := ParseSoloSessionRef(api.transitions[0].SessionRef)
 		if err != nil || decoded.LaunchNonce != testNonce {
